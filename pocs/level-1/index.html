@@ -1100,91 +1100,96 @@ function findMolecules() {
   return molecules;
 }
 
+// Pre-compute 26 hull sample directions (6 cardinal + 8 corners + 12 edges)
+const HULL_DIRS = [];
+for (let x = -1; x <= 1; x++) {
+  for (let y = -1; y <= 1; y++) {
+    for (let z = -1; z <= 1; z++) {
+      if (x === 0 && y === 0 && z === 0) continue;
+      HULL_DIRS.push(new THREE.Vector3(x, y, z).normalize());
+    }
+  }
+}
+const HULL_DIR_COUNT = HULL_DIRS.length; // 26
+
+function makeSkinGeo(positions) {
+  const geo = new ConvexGeometry(positions);
+  // ConvexGeometry emits position+normal but NOT uv.
+  // MeshStandardMaterial's WebGPU pipeline expects uv in vertex buffer slot 1.
+  // Add a zeroed uv attribute so all three slots are bound at draw time.
+  const count = geo.getAttribute('position').count;
+  geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(count * 2), 2));
+  return geo;
+}
+
 function updateSkins() {
   const molecules = findMolecules();
-
-  // Diff: reuse existing skins where the atom set matches, remove stale, create new
   const newSkinMeshes = [];
-  const usedOldIndices = new Set();
+  const usedKeys = new Map(); // key → existing skin entry
+
+  // Index existing skins by key for O(1) lookup
+  for (const skin of skinMeshes) {
+    usedKeys.set(skin.key, skin);
+  }
+
+  const claimed = new Set();
 
   for (const mol of molecules) {
     const sortedIds = [...mol].sort((a, b) => a - b);
     const key = sortedIds.join(',');
 
-    // Try to find existing skin for this molecule
-    let existing = null;
-    for (let i = 0; i < skinMeshes.length; i++) {
-      if (usedOldIndices.has(i)) continue;
-      const oldKey = [...skinMeshes[i].atomIds].sort((a, b) => a - b).join(',');
-      if (oldKey === key) {
-        existing = skinMeshes[i];
-        usedOldIndices.add(i);
-        break;
-      }
-    }
-
-    // Gather world positions with inflation
+    // Gather hull sample points
     const positions = [];
-    const center = new THREE.Vector3();
-    for (const id of mol) {
-      const a = atomMap.get(id);
-      if (a) center.add(a.group.position);
-    }
-    center.divideScalar(mol.length);
-
-    // Generate hull sample points on the OUTSIDE of each atom's surface + padding.
-    // 26 directions (6 cardinal + 8 corners + 12 edges) per atom gives a nice round hull.
-    const HULL_DIRS = [];
-    for (let x = -1; x <= 1; x++) {
-      for (let y = -1; y <= 1; y++) {
-        for (let z = -1; z <= 1; z++) {
-          if (x === 0 && y === 0 && z === 0) continue;
-          HULL_DIRS.push(new THREE.Vector3(x, y, z).normalize());
-        }
-      }
-    }
-
     for (const id of mol) {
       const a = atomMap.get(id);
       if (!a) continue;
-      const atomPos = a.group.position;
-      // Effective radius: visual radius + padding
+      const px = a.group.position.x, py = a.group.position.y, pz = a.group.position.z;
       const r = (a.type === 'flex' ? FLEX_RADIUS : ATOM_RADIUS) + SKIN_PADDING;
 
-      for (const dir of HULL_DIRS) {
-        positions.push(atomPos.clone().addScaledVector(dir, r));
+      for (let d = 0; d < HULL_DIR_COUNT; d++) {
+        const dir = HULL_DIRS[d];
+        positions.push(new THREE.Vector3(px + dir.x * r, py + dir.y * r, pz + dir.z * r));
       }
 
-      // For FLEX, also sample along the capsule length
       if (a.type === 'flex') {
-        const capsuleDir = new THREE.Vector3(0, 0, 1).applyQuaternion(a.group.quaternion);
+        const q = a.group.quaternion;
+        const ix = 2 * (q.y * q.w + q.x * q.z);
+        const iy = 2 * (q.y * q.z - q.x * q.w);
+        const iz = 1 - 2 * (q.x * q.x + q.y * q.y);
         const halfLen = FLEX_LENGTH * 0.5;
         const endR = FLEX_RADIUS + SKIN_PADDING;
         for (const sign of [-1, 1]) {
-          const endCenter = atomPos.clone().addScaledVector(capsuleDir, halfLen * sign);
-          for (const dir of HULL_DIRS) {
-            positions.push(endCenter.clone().addScaledVector(dir, endR));
+          const ex = px + ix * halfLen * sign;
+          const ey = py + iy * halfLen * sign;
+          const ez = pz + iz * halfLen * sign;
+          for (let d = 0; d < HULL_DIR_COUNT; d++) {
+            const dir = HULL_DIRS[d];
+            positions.push(new THREE.Vector3(ex + dir.x * endR, ey + dir.y * endR, ez + dir.z * endR));
           }
         }
       }
     }
 
-    if (positions.length < 4) continue; // ConvexGeometry needs 4+ non-coplanar points
+    if (positions.length < 4) continue;
 
     try {
-      const geo = new ConvexGeometry(positions);
+      const geo = makeSkinGeo(positions);
+      const existing = usedKeys.get(key);
 
-      // Always create a fresh mesh — WebGPU renderer caches pipeline/buffer bindings
-      // per mesh object, so swapping geometry on an existing mesh causes stale vertex
-      // buffer references. Reuse the material when possible.
-      let mat;
-      if (existing) {
+      if (existing && !claimed.has(key)) {
+        // Tear down old mesh entirely, build fresh — avoids WebGPU stale buffer binding
         scene.remove(existing.mesh);
         existing.mesh.geometry.dispose();
-        mat = existing.mesh.material;
+        // Reuse tinted material clone
+        const mesh = new THREE.Mesh(geo, existing.mesh.material);
+        mesh.renderOrder = 1;
+        scene.add(mesh);
+        claimed.add(key);
+        newSkinMeshes.push({ mesh, atomIds: mol, key });
       } else {
+        // New molecule — full MeshStandardMaterial for lighting support
         const skinCol = getSkinColor(mol);
-        mat = new THREE.MeshStandardMaterial({
+        const mat = new THREE.MeshStandardMaterial({
           color: skinCol.color,
           emissive: skinCol.emissive,
           emissiveIntensity: SKIN_EMISSIVE_INTENSITY,
@@ -1195,23 +1200,22 @@ function updateSkins() {
           metalness: 0.05,
           depthWrite: false,
         });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.renderOrder = 1;
+        scene.add(mesh);
+        newSkinMeshes.push({ mesh, atomIds: mol, key });
       }
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.renderOrder = 1;
-      scene.add(mesh);
-      newSkinMeshes.push({ mesh, atomIds: mol });
     } catch (e) {
-      // ConvexGeometry can fail with coplanar points — skip silently
-      if (existing) newSkinMeshes.push(existing);
+      // ConvexGeometry can fail with coplanar points — skip
     }
   }
 
-  // Remove orphaned skins
-  for (let i = 0; i < skinMeshes.length; i++) {
-    if (!usedOldIndices.has(i)) {
-      scene.remove(skinMeshes[i].mesh);
-      skinMeshes[i].mesh.geometry.dispose();
-      skinMeshes[i].mesh.material.dispose();
+  // Remove orphaned skins (molecules that no longer exist)
+  for (const skin of skinMeshes) {
+    if (!claimed.has(skin.key) && !newSkinMeshes.includes(skin)) {
+      scene.remove(skin.mesh);
+      skin.mesh.geometry.dispose();
+      skin.mesh.material.dispose();
     }
   }
 

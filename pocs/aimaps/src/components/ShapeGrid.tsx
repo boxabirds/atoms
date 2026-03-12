@@ -43,11 +43,10 @@ const GRID_POSITIONS: [number, number, number][] = [
 /** Neutral base color when no albedo map is applied */
 const NEUTRAL_COLOR = 0x6699cc;
 
-/** Base light intensities (scaled by the brightness slider) */
-const BASE_AMBIENT_INTENSITY = 2.0;
-const BASE_KEY_INTENSITY = 4.0;
-const BASE_FILL_INTENSITY = 1.5;
-const BASE_ENV_INTENSITY = 2.0;
+/** Default tone mapping exposure — the "camera brightness" knob for PBR */
+const DEFAULT_EXPOSURE = 1.8;
+/** Environment map drives PBR reflections — this is what makes metals look metallic */
+const ENV_INTENSITY = 3.0;
 
 // ---------------------------------------------------------------------------
 // Scene setup
@@ -69,10 +68,6 @@ interface SceneState {
   seamGroups: number[][][];
   /** Cache decoded displacement pixel data by data-URL */
   displacementCache: Map<string, DisplacementData>;
-  /** Light references for dynamic brightness control */
-  ambientLight: THREE.AmbientLight;
-  keyLight: THREE.DirectionalLight;
-  fillLight: THREE.DirectionalLight;
 }
 
 function createGeometries(): THREE.BufferGeometry[] {
@@ -88,8 +83,8 @@ async function initScene(canvas: HTMLCanvasElement): Promise<SceneState> {
   const renderer = new WebGPURenderer({ canvas, antialias: true, alpha: false });
   await renderer.init();
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.2;
+  renderer.toneMapping = THREE.NeutralToneMapping;
+  renderer.toneMappingExposure = DEFAULT_EXPOSURE;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0a1a);
@@ -99,7 +94,7 @@ async function initScene(canvas: HTMLCanvasElement): Promise<SceneState> {
   // scene.background stays dark for aesthetics; scene.environment drives shading.
   const pmrem = new THREE.PMREMGenerator(renderer);
   scene.environment = pmrem.fromScene(new RoomEnvironment()).texture;
-  scene.environmentIntensity = 2.0;
+  scene.environmentIntensity = ENV_INTENSITY;
   pmrem.dispose();
 
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
@@ -110,16 +105,18 @@ async function initScene(canvas: HTMLCanvasElement): Promise<SceneState> {
   controls.dampingFactor = 0.05;
   controls.target.set(0, 0, 0);
 
-  // Lighting — WebGPU's physically correct model needs higher intensities
-  // than the old WebGL pipeline to match perceived brightness.
-  const ambientLight = new THREE.AmbientLight(0xffffff, BASE_AMBIENT_INTENSITY);
-  scene.add(ambientLight);
-  const keyLight = new THREE.DirectionalLight(0xffffff, BASE_KEY_INTENSITY);
-  keyLight.position.set(5, 8, 5);
+  // 3-point lighting: key (warm, 45° right + 45° up), fill (cool, opposite),
+  // rim (behind, edge separation from dark background), plus soft ambient floor.
+  scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+  const keyLight = new THREE.DirectionalLight(0xfff4e0, 3.0);
+  keyLight.position.set(4, 4, 5);     // front-right, moderate elevation
   scene.add(keyLight);
-  const fillLight = new THREE.DirectionalLight(0x4466cc, BASE_FILL_INTENSITY);
-  fillLight.position.set(-3, 2, -3);
+  const fillLight = new THREE.DirectionalLight(0xc0d0ff, 1.5);
+  fillLight.position.set(-4, 2, 3);   // front-left, lower
   scene.add(fillLight);
+  const rimLight = new THREE.DirectionalLight(0xffffff, 2.0);
+  rimLight.position.set(0, 3, -6);    // behind, edge highlight
+  scene.add(rimLight);
 
   // Ground grid
   const grid = new THREE.GridHelper(8, 16, 0x222244, 0x1a1a2e);
@@ -158,9 +155,6 @@ async function initScene(canvas: HTMLCanvasElement): Promise<SceneState> {
     originalNormals,
     seamGroups,
     displacementCache: new Map(),
-    ambientLight,
-    keyLight,
-    fillLight,
   };
 }
 
@@ -205,6 +199,7 @@ function resetMaterial(mat: THREE.MeshPhysicalMaterial) {
   mat.thickness = 0;
   mat.ior = 1.5;
   mat.transparent = false;
+  mat.side = THREE.FrontSide;
   mat.needsUpdate = true;
 }
 
@@ -277,7 +272,12 @@ async function applyEntry(state: SceneState, entry: HistoryEntry) {
     mat.transmission = s.transmission;
     mat.thickness = s.thickness;
     mat.ior = s.ior;
-    mat.transparent = s.transmission > 0;
+    // Do NOT set transparent = true for transmission. Transmission uses its
+    // own buffer pass; alpha-blend transparency conflicts with it (especially
+    // on WebGPU where render passes are stricter).
+    if (s.transmission > 0) {
+      mat.side = THREE.DoubleSide;
+    }
 
     if (s.emissiveIntensity > 0) {
       mat.emissiveIntensity = s.emissiveIntensity;
@@ -332,23 +332,17 @@ interface ShapeGridProps {
   entry: HistoryEntry | null;
 }
 
-/** Default brightness multiplier */
-const DEFAULT_BRIGHTNESS = 1.0;
-
 export function ShapeGrid({ entry }: ShapeGridProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef<SceneState | null>(null);
-  const [brightness, setBrightness] = useState(DEFAULT_BRIGHTNESS);
+  const [exposure, setExposure] = useState(DEFAULT_EXPOSURE);
 
-  const handleBrightness = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleExposure = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const v = parseFloat(e.target.value);
-    setBrightness(v);
+    setExposure(v);
     const s = stateRef.current;
     if (!s) return;
-    s.ambientLight.intensity = BASE_AMBIENT_INTENSITY * v;
-    s.keyLight.intensity = BASE_KEY_INTENSITY * v;
-    s.fillLight.intensity = BASE_FILL_INTENSITY * v;
-    s.scene.environmentIntensity = BASE_ENV_INTENSITY * v;
+    s.renderer.toneMappingExposure = v;
   }, []);
 
   // Initialise Three.js scene once
@@ -416,16 +410,16 @@ export function ShapeGrid({ entry }: ShapeGridProps) {
       <canvas ref={canvasRef} />
       <div className="viewport-toolbar">
         <label className="toolbar-slider">
-          <span className="toolbar-icon" title="Brightness">&#9728;</span>
+          <span className="toolbar-icon" title="Exposure">&#9728;</span>
           <input
             type="range"
-            min="0"
-            max="4"
-            step="0.05"
-            value={brightness}
-            onChange={handleBrightness}
+            min="0.2"
+            max="5"
+            step="0.1"
+            value={exposure}
+            onChange={handleExposure}
           />
-          <span className="toolbar-value">{brightness.toFixed(1)}x</span>
+          <span className="toolbar-value">{exposure.toFixed(1)}</span>
         </label>
       </div>
       <div className="shape-labels">
