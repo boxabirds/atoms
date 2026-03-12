@@ -309,12 +309,22 @@ const SPRING_K = 50;
 const REST_LENGTH_FACTOR = 2.2;
 const GROUND_FRICTION = 0.92;
 
+// Collision
+const COLLISION_REPULSION = 80;
+const ATOM_COLLISION_RADIUS = 0.24;
+const FLEX_COLLISION_RADIUS = 0.11;
+
+// Arena bounds — atoms bounce off walls at half the ground size
+const ARENA_HALF = GROUND_SIZE * 0.5;
+const WALL_BOUNCE = 0.5;             // velocity retained on wall bounce
+const VELOCITY_CAP = 8.0;            // max speed any atom can reach
+
 const RAYCAST_THRESHOLD = 0.4;
 
 // Signal system
 const SIGNAL_SPEED = 4.0;
-const PULSE_FIRE_INTERVAL = 1.0;
-const PULSE_FORCE_STRENGTH = 3.0;
+const PULSE_FIRE_INTERVAL = 1.2;
+const PULSE_FORCE_STRENGTH = 1.5;
 const SENSE_DETECTION_RANGE = 2.0;
 const SENSE_CONE_ANGLE = Math.PI / 3;
 const SENSE_COOLDOWN = 0.5;
@@ -352,15 +362,19 @@ const PREBUILT_MACHINES = [
   },
   {
     name: 'Walker',
-    desc: 'Two PULSEs on FLEX legs — lurches forward when unfrozen',
+    desc: 'Alternating PULSEs on FLEX legs — lurches forward. Hit Space!',
     atoms: [
-      { type: 'flex',  offset: [0, 0, 0] },
-      { type: 'pulse', offset: [0.45, -0.3, 0] },
-      { type: 'pulse', offset: [-0.45, -0.3, 0] },
-      { type: 'flex',  offset: [0.45, 0.1, 0] },
-      { type: 'flex',  offset: [-0.45, 0.1, 0] },
+      { type: 'flex',  offset: [0, 0.15, 0] },          // 0: spine
+      { type: 'pulse', offset: [0.35, -0.25, 0.2], phaseOffset: 0 },  // 1: right-front leg
+      { type: 'pulse', offset: [-0.35, -0.25, 0.2], phaseOffset: Math.PI }, // 2: left-front leg (opposite phase)
+      { type: 'pulse', offset: [0.35, -0.25, -0.2], phaseOffset: Math.PI }, // 3: right-rear
+      { type: 'pulse', offset: [-0.35, -0.25, -0.2], phaseOffset: 0 },     // 4: left-rear
+      { type: 'flex',  offset: [0.35, 0.05, 0.2] },     // 5: right-front hip
+      { type: 'flex',  offset: [-0.35, 0.05, 0.2] },    // 6: left-front hip
+      { type: 'flex',  offset: [0.35, 0.05, -0.2] },    // 7: right-rear hip
+      { type: 'flex',  offset: [-0.35, 0.05, -0.2] },   // 8: left-rear hip
     ],
-    autoConnect: [[0, 3], [0, 4], [3, 1], [4, 2]],
+    autoConnect: [[0, 5], [0, 6], [0, 7], [0, 8], [5, 1], [6, 2], [7, 3], [8, 4]],
   },
   {
     name: 'Tracker',
@@ -415,8 +429,8 @@ const PREBUILT_MACHINES = [
       { type: 'sense', offset: [0, 0.15, 0.7] },
       { type: 'relay', offset: [0, 0, 0.35] },
       { type: 'hold',  offset: [0, 0, 0] },
-      { type: 'pulse', offset: [0.3, 0, -0.35] },
-      { type: 'pulse', offset: [-0.3, 0, -0.35] },
+      { type: 'pulse', offset: [0.3, 0, -0.35], phaseOffset: 0 },
+      { type: 'pulse', offset: [-0.3, 0, -0.35], phaseOffset: Math.PI },
       { type: 'flex',  offset: [0.5, -0.3, 0.2] },
       { type: 'flex',  offset: [-0.5, -0.3, 0.2] },
       { type: 'flex',  offset: [0.5, -0.3, -0.3] },
@@ -862,16 +876,31 @@ function firePulse(atom, time) {
   atom.signalCharge = 1.0;
   if (atom.group.userData.kickRing) atom.group.userData.kickTime = time;
 
+  // PULSE emits force along its nozzle direction (local +Z).
+  // Newton's third law: the pulse atom gets pushed BACKWARD,
+  // and the impulse propagates FORWARD through connections.
+  const nozzleDir = new THREE.Vector3(0, 0, 1).applyQuaternion(atom.group.quaternion);
+
+  // Recoil: push self backward (opposite of nozzle)
+  atom.velocity.addScaledVector(nozzleDir, -PULSE_FORCE_STRENGTH * 0.5);
+
+  // Push connected atoms forward (along nozzle direction)
+  // Plus: if near ground, add upward component for "kicking off ground" locomotion
   for (const conn of atom.connections) {
     const otherId = conn.fromAtomId === atom.id ? conn.toAtomId : conn.fromAtomId;
     const other = atoms.find(a => a.id === otherId);
     if (!other) continue;
 
-    // Physical force
-    const pushDir = other.group.position.clone().sub(atom.group.position).normalize();
-    other.velocity.addScaledVector(pushDir, PULSE_FORCE_STRENGTH);
+    // Primary force: nozzle direction
+    other.velocity.addScaledVector(nozzleDir, PULSE_FORCE_STRENGTH);
 
-    // Signal
+    // If pulse is near ground, add slight upward kick for hopping
+    const GROUND_KICK_THRESHOLD = GROUND_Y + ATOM_RADIUS * 3;
+    if (atom.group.position.y < GROUND_KICK_THRESHOLD) {
+      const GROUND_KICK_STRENGTH = 0.4;
+      other.velocity.y += GROUND_KICK_STRENGTH;
+    }
+
     emitSignal(atom.id, otherId, conn);
   }
 }
@@ -998,8 +1027,47 @@ function updateTendrils() {
 // PHYSICS
 // ===========================================================================
 
+function getCollisionRadius(atom) {
+  return atom.type === 'flex' ? FLEX_COLLISION_RADIUS : ATOM_COLLISION_RADIUS;
+}
+
 function updatePhysics(dt) {
   if (isFrozen) return;
+
+  // --- Sphere-sphere collision repulsion (O(n²), fine for <1000 atoms) ---
+  for (let i = 0; i < atoms.length; i++) {
+    const a = atoms[i];
+    const ra = getCollisionRadius(a);
+    for (let j = i + 1; j < atoms.length; j++) {
+      const b = atoms[j];
+      const rb = getCollisionRadius(b);
+
+      const diff = a.group.position.clone().sub(b.group.position);
+      const dist = diff.length();
+      const minDist = ra + rb;
+
+      if (dist < minDist && dist > 0.001) {
+        const overlap = minDist - dist;
+        const pushDir = diff.normalize();
+        const force = overlap * COLLISION_REPULSION * dt;
+
+        // Skip if being dragged
+        const aDragged = isDraggingAtom && selectedAtom && selectedAtom.id === a.id;
+        const bDragged = isDraggingAtom && selectedAtom && selectedAtom.id === b.id;
+
+        if (!aDragged) a.velocity.addScaledVector(pushDir, force);
+        if (!bDragged) b.velocity.addScaledVector(pushDir, -force);
+
+        // Also separate positions directly to prevent sinking
+        const POSITION_CORRECTION = 0.4;
+        const correction = pushDir.clone().multiplyScalar(overlap * POSITION_CORRECTION * 0.5);
+        if (!aDragged) a.group.position.add(correction);
+        if (!bDragged) b.group.position.sub(correction);
+      }
+    }
+  }
+
+  // --- Per-atom: gravity, damping, ground, spring constraints ---
   for (const atom of atoms) {
     if (isDraggingAtom && selectedAtom && selectedAtom.id === atom.id) continue;
 
@@ -1007,7 +1075,7 @@ function updatePhysics(dt) {
     atom.velocity.multiplyScalar(DAMPING);
     atom.group.position.addScaledVector(atom.velocity, dt);
 
-    const gLevel = GROUND_Y + ATOM_RADIUS;
+    const gLevel = GROUND_Y + getCollisionRadius(atom);
     if (atom.group.position.y < gLevel) {
       atom.group.position.y = gLevel;
       atom.velocity.y = -atom.velocity.y * GROUND_BOUNCE;
@@ -1019,6 +1087,7 @@ function updatePhysics(dt) {
       atom.grounded = false;
     }
 
+    // Spring constraints from connections
     for (const conn of atom.connections) {
       const otherId = conn.fromAtomId === atom.id ? conn.toAtomId : conn.fromAtomId;
       const other = atoms.find(a => a.id === otherId);
@@ -1302,7 +1371,14 @@ function spawnMachine(mi, center) {
   for (const def of machine.atoms) {
     const pos = center.clone().add(new THREE.Vector3(def.offset[0], def.offset[1], def.offset[2]));
     pos.y = Math.max(pos.y, GROUND_Y + ATOM_RADIUS);
-    spawned.push(addAtom(def.type, pos));
+    const atom = addAtom(def.type, pos);
+    // Apply phase offset for alternating PULSE timing
+    if (def.phaseOffset !== undefined && atom.type === 'pulse') {
+      atom.group.userData.pulsePhase = def.phaseOffset;
+      // Stagger the initial fire time so they don't all fire at once
+      atom.group.userData.lastFireTime = -(PULSE_FIRE_INTERVAL * (def.phaseOffset / (Math.PI * 2)));
+    }
+    spawned.push(atom);
   }
   for (const [fi, ti] of machine.autoConnect) {
     const fa = spawned[fi], ta = spawned[ti];

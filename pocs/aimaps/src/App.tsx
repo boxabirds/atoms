@@ -1,20 +1,17 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { ShapeGrid } from './components/ShapeGrid';
 import { HistoryPanel } from './components/HistoryPanel';
+import { computeNormalMap } from './lib/normal-from-height';
+import type { HistoryEntry, MaterialRecipe, MapType, MapKey } from './lib/types';
+import { DEFAULT_SCALARS } from './lib/types';
 
-export interface HistoryEntry {
-  id: string;
-  prompt: string;
-  imageDataUrl: string;
-  timestamp: number;
-}
+// Re-export for components that import from App
+export type { HistoryEntry };
 
-/**
- * Force an image to tile seamlessly using offset-blend:
- * 1. Shift the image by half its dimensions (so original edges land in the center)
- * 2. Crossfade between original and shifted version — original dominates the center
- *    (preserving detail), shifted version dominates the edges (ensuring continuity).
- */
+// ---------------------------------------------------------------------------
+// Seamless post-processing (offset-blend)
+// ---------------------------------------------------------------------------
+
 function makeSeamless(srcDataUrl: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -29,28 +26,23 @@ function makeSeamless(srcDataUrl: string): Promise<string> {
       canvas.height = h;
       const ctx = canvas.getContext('2d')!;
 
-      // Draw original
       ctx.drawImage(img, 0, 0);
       const original = ctx.getImageData(0, 0, w, h);
 
-      // Draw shifted by half (wrapping quadrants)
       ctx.clearRect(0, 0, w, h);
-      ctx.drawImage(img, hw, hh, hw, hh, 0, 0, hw, hh); // bottom-right → top-left
-      ctx.drawImage(img, 0, hh, hw, hh, hw, 0, hw, hh); // bottom-left → top-right
-      ctx.drawImage(img, hw, 0, hw, hh, 0, hh, hw, hh); // top-right → bottom-left
-      ctx.drawImage(img, 0, 0, hw, hh, hw, hh, hw, hh); // top-left → bottom-right
+      ctx.drawImage(img, hw, hh, hw, hh, 0, 0, hw, hh);
+      ctx.drawImage(img, 0, hh, hw, hh, hw, 0, hw, hh);
+      ctx.drawImage(img, hw, 0, hw, hh, 0, hh, hw, hh);
+      ctx.drawImage(img, 0, 0, hw, hh, hw, hh, hw, hh);
       const shifted = ctx.getImageData(0, 0, w, h);
 
-      // Blend: original at center, shifted at edges
       const out = ctx.createImageData(w, h);
       for (let y = 0; y < h; y++) {
-        const dy = Math.abs(y - hh) / hh; // 0 at center, 1 at edge
+        const dy = Math.abs(y - hh) / hh;
         for (let x = 0; x < w; x++) {
-          const dx = Math.abs(x - hw) / hw; // 0 at center, 1 at edge
+          const dx = Math.abs(x - hw) / hw;
           const t = Math.max(dx, dy);
-          // Smoothstep: blend=0 at center (use original), blend=1 at edges (use shifted)
           const blend = t * t * (3 - 2 * t);
-
           const idx = (y * w + x) * 4;
           for (let c = 0; c < 4; c++) {
             out.data[idx + c] =
@@ -68,72 +60,150 @@ function makeSeamless(srcDataUrl: string): Promise<string> {
   });
 }
 
+// ---------------------------------------------------------------------------
+// API helpers
+// ---------------------------------------------------------------------------
+
+async function fetchRecipe(prompt: string): Promise<MaterialRecipe> {
+  const res = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(typeof data.error === 'string' ? data.error : data.error.message ?? 'Analyze failed');
+
+  // Validate / apply defaults
+  return {
+    mapsToGenerate: data.mapsToGenerate ?? [],
+    mapDescriptions: data.mapDescriptions ?? {},
+    scalars: { ...DEFAULT_SCALARS, ...data.scalars },
+  };
+}
+
+/** Extract base64 image from a Gemini generateContent response */
+function extractImageDataUrl(data: Record<string, unknown>): string {
+  if ((data as { error?: unknown }).error) {
+    const err = (data as { error: { message?: string } | string }).error;
+    throw new Error(typeof err === 'string' ? err : (err as { message?: string }).message ?? 'Image generation failed');
+  }
+  const candidates = (data as { candidates?: { content?: { parts?: { inlineData?: { mimeType: string; data: string } }[] } }[] }).candidates;
+  const parts = candidates?.[0]?.content?.parts ?? [];
+  const imagePart = parts.find((p) => p.inlineData);
+  if (!imagePart?.inlineData) throw new Error('No image returned from Gemini');
+  const { mimeType, data: base64 } = imagePart.inlineData;
+  return `data:${mimeType};base64,${base64}`;
+}
+
+async function generateMap(type: MapType, description: string): Promise<string> {
+  const res = await fetch('/api/generate-map', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type, description }),
+  });
+  const data = await res.json();
+  const rawUrl = extractImageDataUrl(data);
+  return makeSeamless(rawUrl);
+}
+
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
+
 export function App() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [activeMapId, setActiveMapId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingStatus, setLoadingStatus] = useState('');
 
-  const activeMap = history.find((h) => h.id === activeMapId) ?? null;
+  // Track the "live" entry being built during generation for progressive reveal
+  const liveEntryRef = useRef<HistoryEntry | null>(null);
+  const [liveEntry, setLiveEntry] = useState<HistoryEntry | null>(null);
+
+  const activeMap = liveEntry?.id === activeMapId
+    ? liveEntry
+    : history.find((h) => h.id === activeMapId) ?? null;
 
   const handleGenerate = useCallback(async (prompt: string) => {
     setLoading(true);
+    setLoadingStatus('Analyzing prompt...');
+
     try {
-      const res = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt }),
-      });
+      // 1. Discriminator — get material recipe
+      const recipe = await fetchRecipe(prompt);
+      console.log('[aimaps] Recipe:', recipe);
 
-      const data = await res.json();
-
-      if (data.error) {
-        throw new Error(
-          typeof data.error === 'string'
-            ? data.error
-            : data.error.message ?? 'API error',
-        );
-      }
-
-      const parts = data.candidates?.[0]?.content?.parts ?? [];
-      const imagePart = parts.find(
-        (p: Record<string, unknown>) => p.inlineData,
-      );
-
-      if (!imagePart) {
-        throw new Error('No image returned from Gemini');
-      }
-
-      const { mimeType, data: base64 } = imagePart.inlineData as {
-        mimeType: string;
-        data: string;
-      };
-      const rawDataUrl = `data:${mimeType};base64,${base64}`;
-      const imageDataUrl = await makeSeamless(rawDataUrl);
-
+      const entryId = crypto.randomUUID();
       const entry: HistoryEntry = {
-        id: crypto.randomUUID(),
+        id: entryId,
         prompt,
-        imageDataUrl,
+        recipe,
+        maps: {},
         timestamp: Date.now(),
       };
 
-      setHistory((prev) => [entry, ...prev]);
-      setActiveMapId(entry.id);
+      liveEntryRef.current = entry;
+      setLiveEntry({ ...entry });
+      setActiveMapId(entryId);
+
+      // 2. Generate all maps in parallel, applying each as it arrives
+      const mapTypes = recipe.mapsToGenerate;
+      if (mapTypes.length === 0) {
+        setLoadingStatus('No maps needed — scalars only');
+      }
+
+      const updateMap = (key: MapKey, dataUrl: string) => {
+        const live = liveEntryRef.current!;
+        live.maps = { ...live.maps, [key]: dataUrl };
+        setLiveEntry({ ...live });
+      };
+
+      await Promise.all(
+        mapTypes.map(async (type) => {
+          const desc = recipe.mapDescriptions[type];
+          if (!desc) return;
+
+          setLoadingStatus(`Generating ${type} map...`);
+          try {
+            const dataUrl = await generateMap(type, desc);
+            updateMap(type, dataUrl);
+
+            // Derive normal map from displacement as soon as it arrives
+            if (type === 'displacement') {
+              setLoadingStatus('Computing normal map...');
+              const normalUrl = await computeNormalMap(dataUrl);
+              updateMap('normal', normalUrl);
+            }
+          } catch (err) {
+            console.warn(`[aimaps] Failed to generate ${type} map:`, err);
+          }
+        }),
+      );
+
+      // 3. Finalise — move live entry into history
+      const final = { ...liveEntryRef.current! };
+      setHistory((prev) => [final, ...prev]);
+      liveEntryRef.current = null;
+      setLiveEntry(null);
     } catch (err) {
       console.error('Generation failed:', err);
       alert(`Generation failed: ${err instanceof Error ? err.message : err}`);
+      liveEntryRef.current = null;
+      setLiveEntry(null);
     } finally {
       setLoading(false);
+      setLoadingStatus('');
     }
   }, []);
 
   return (
     <div className="app">
-      <ShapeGrid displacementMapUrl={activeMap?.imageDataUrl ?? null} />
+      <ShapeGrid entry={activeMap} />
       <HistoryPanel
         history={history}
         activeMapId={activeMapId}
         loading={loading}
+        loadingStatus={loadingStatus}
         onGenerate={handleGenerate}
         onSelect={setActiveMapId}
       />
