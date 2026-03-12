@@ -128,6 +128,28 @@
     box-shadow: 0 0 6px rgba(79, 195, 247, 0.4);
   }
 
+  /* ---- Skin picker popup ---- */
+  #skin-picker {
+    position: fixed; display: none;
+    background: rgba(18, 18, 28, 0.95);
+    border: 1px solid rgba(79, 195, 247, 0.3);
+    border-radius: 10px; padding: 8px 10px;
+    z-index: 200; min-width: 140px;
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  }
+  #skin-picker .picker-title {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 1px;
+    color: #666; margin-bottom: 6px;
+  }
+  #skin-picker select {
+    width: 100%; padding: 4px 6px;
+    background: rgba(255, 255, 255, 0.06); color: #ccc;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px; font-size: 12px; outline: none;
+  }
+  #skin-picker select option { background: #1a1a2e; color: #ccc; }
+
   /* ---- Right Panel: Machines ---- */
   #machines { right: 16px; min-width: 170px; max-width: 190px; max-height: 80vh; overflow-y: auto; }
   #machines::-webkit-scrollbar { width: 4px; }
@@ -265,6 +287,12 @@
   Drag atom/machine to place · [V] select/move tool · [Space] freeze/unfreeze · Right-click remove · Dbl-click toggle · [1-5] quick-select
 </div>
 
+<!-- Skin picker popup (shown on molecule click) -->
+<div id="skin-picker">
+  <div class="picker-title">Skin Material</div>
+  <select id="skin-select"></select>
+</div>
+
 <div id="toast"></div>
 <div id="drag-ghost"></div>
 
@@ -272,6 +300,7 @@
 <script type="importmap">
 { "imports": {
     "three": "https://cdn.jsdelivr.net/npm/three@0.173.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.173.0/build/three.webgpu.js",
     "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.173.0/build/three.tsl.js",
     "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.173.0/examples/jsm/"
 }}
@@ -279,6 +308,7 @@
 
 <script type="module">
 import * as THREE from 'three';
+import { triplanarTexture, texture, positionWorld, normalWorld, vec3, float } from 'three/tsl';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 
@@ -302,11 +332,20 @@ const CAMERA_INITIAL_POS = [3, 2.5, 5];
 const ORBIT_DAMPING = 0.08;
 
 const AMBIENT_INTENSITY = 0.4;
-const DIR_LIGHT_INTENSITY = 1.0;
-const DIR_LIGHT_POS = [5, 10, 7];
 const HEMI_SKY = 0x4466aa;
 const HEMI_GROUND = 0x1a1a2e;
 const HEMI_INTENSITY = 0.5;
+
+// 3-point lighting for PBR materials (from aimaps POC)
+const KEY_LIGHT_INTENSITY = 3.0;
+const KEY_LIGHT_POS = [4, 4, 5];
+const KEY_LIGHT_COLOR = 0xfff4e0;
+const FILL_LIGHT_INTENSITY = 1.5;
+const FILL_LIGHT_POS = [-4, 2, 3];
+const FILL_LIGHT_COLOR = 0xc0d0ff;
+const RIM_LIGHT_INTENSITY = 2.0;
+const RIM_LIGHT_POS = [0, 3, -6];
+const RIM_LIGHT_COLOR = 0xffffff;
 
 const ATOM_RADIUS = 0.25;
 const ATOM_SEGMENTS = 28;
@@ -352,6 +391,8 @@ const SKIN_EMISSIVE = 0x224466;
 const SKIN_EMISSIVE_INTENSITY = 0.2;
 const SKIN_PADDING = 0.18;           // extra padding beyond atom surface
 const SKIN_MIN_ATOMS = 2;            // minimum atoms in a molecule to get a skin
+const SKIN_TEXTURE_SCALE = 2.0;      // world-space tiling density for triplanar mapping
+const AVAILABLE_SKINS = ['none', 'rusty-and-warped'];  // extensible skin list
 
 const RAYCAST_THRESHOLD = 0.4;
 
@@ -503,8 +544,9 @@ let isDraggingMachine = false;
 let hoveredAtom = null;
 
 // Skin system
-const skinMeshes = [];     // { mesh, atomIds[] }
+const skinMeshes = [];     // { mesh, atomIds[], key, skinType }
 let skinOpacity = SKIN_DEFAULT_OPACITY;
+const skinTextureCache = new Map(); // name → { albedo, normal, roughness, metalness } THREE.Texture
 
 // ===========================================================================
 // UTILITIES
@@ -1210,6 +1252,7 @@ function updateSkins() {
       // Reuse mesh — just overwrite vertex data in the pre-allocated buffers
       if (writeSkinData(existing.mesh.geometry, positions)) {
         existing.atomIds = mol;
+        existing.skinType = existing.skinType || 'none';
         claimed.add(key);
         newSkinMeshes.push(existing);
       }
@@ -1218,21 +1261,11 @@ function updateSkins() {
       const geo = createSkinGeometry();
       if (writeSkinData(geo, positions)) {
         const skinCol = getSkinColor(mol);
-        const mat = new THREE.MeshStandardMaterial({
-          color: skinCol.color,
-          emissive: skinCol.emissive,
-          emissiveIntensity: SKIN_EMISSIVE_INTENSITY,
-          transparent: true,
-          opacity: skinOpacity,
-          side: THREE.DoubleSide,
-          roughness: 0.6,
-          metalness: 0.05,
-          depthWrite: false,
-        });
+        const mat = createSkinMaterial(skinCol, 'none');
         const mesh = new THREE.Mesh(geo, mat);
         mesh.renderOrder = 1;
         scene.add(mesh);
-        newSkinMeshes.push({ mesh, atomIds: mol, key });
+        newSkinMeshes.push({ mesh, atomIds: mol, key, skinType: 'none' });
       } else {
         geo.dispose();
       }
@@ -1272,6 +1305,138 @@ function getSkinColor(mol) {
   }
   const def = ATOM_DEFS[dominant];
   return { color: def.color, emissive: def.emissive };
+}
+
+// ---------------------------------------------------------------------------
+// PBR SKIN TEXTURES — triplanar mapped onto dynamic convex hulls
+// ---------------------------------------------------------------------------
+
+const MAP_TYPES = ['albedo', 'normal', 'roughness', 'metalness'];
+const textureLoader = new THREE.TextureLoader();
+
+async function loadSkinTextureSet(name) {
+  if (name === 'none' || skinTextureCache.has(name)) return;
+  const basePath = `./skins/${name}/`;
+  const textures = {};
+  const promises = MAP_TYPES.map(type => {
+    const url = `${basePath}${type}-${name}.png`;
+    return new Promise(resolve => {
+      textureLoader.load(url, tex => {
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+        tex.colorSpace = type === 'albedo' ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
+        textures[type] = tex;
+        resolve();
+      }, undefined, () => resolve()); // silently skip missing maps
+    });
+  });
+  await Promise.all(promises);
+  skinTextureCache.set(name, textures);
+}
+
+function createSkinMaterial(skinCol, skinType) {
+  const texSet = skinType !== 'none' ? skinTextureCache.get(skinType) : null;
+
+  if (texSet && texSet.albedo) {
+    const mat = new THREE.MeshStandardMaterial({
+      transparent: true,
+      opacity: skinOpacity,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+
+    // Triplanar albedo × molecule tint
+    const scale = float(SKIN_TEXTURE_SCALE);
+    const albedoNode = triplanarTexture(texture(texSet.albedo), null, null, scale, positionWorld, normalWorld);
+    const tint = vec3(
+      float(((skinCol.color >> 16) & 0xff) / 255),
+      float(((skinCol.color >> 8) & 0xff) / 255),
+      float((skinCol.color & 0xff) / 255)
+    );
+    mat.colorNode = albedoNode.rgb.mul(tint);
+
+    // Triplanar normal
+    if (texSet.normal) {
+      mat.normalNode = triplanarTexture(texture(texSet.normal), null, null, scale, positionWorld, normalWorld);
+    }
+
+    // Triplanar roughness (grayscale → use red channel)
+    if (texSet.roughness) {
+      mat.roughnessNode = triplanarTexture(texture(texSet.roughness), null, null, scale, positionWorld, normalWorld).r;
+    }
+
+    // Triplanar metalness (grayscale → use red channel)
+    if (texSet.metalness) {
+      mat.metalnessNode = triplanarTexture(texture(texSet.metalness), null, null, scale, positionWorld, normalWorld).r;
+    }
+
+    mat.renderOrder = 1;
+    return mat;
+  }
+
+  // Fallback: plain colored material (no textures)
+  return new THREE.MeshStandardMaterial({
+    color: skinCol.color,
+    emissive: skinCol.emissive,
+    emissiveIntensity: SKIN_EMISSIVE_INTENSITY,
+    transparent: true,
+    opacity: skinOpacity,
+    side: THREE.DoubleSide,
+    roughness: 0.6,
+    metalness: 0.05,
+    depthWrite: false,
+  });
+}
+
+function rebuildSkinMaterials() {
+  for (const skin of skinMeshes) {
+    const oldMat = skin.mesh.material;
+    const skinCol = getSkinColor(skin.atomIds);
+    skin.mesh.material = createSkinMaterial(skinCol, skin.skinType || 'none');
+    oldMat.dispose();
+  }
+}
+
+// Find which skin entry an atom belongs to
+function findSkinForAtom(atomId) {
+  return skinMeshes.find(s => s.atomIds && (Array.isArray(s.atomIds)
+    ? s.atomIds.includes(atomId) : s.atomIds.has(atomId)));
+}
+
+// Show skin picker near a screen position
+function showSkinPicker(skin, screenX, screenY) {
+  const picker = document.getElementById('skin-picker');
+  const select = document.getElementById('skin-select');
+
+  // Populate options
+  select.innerHTML = '';
+  for (const name of AVAILABLE_SKINS) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name === 'none' ? 'None (flat color)' : name;
+    if (name === (skin.skinType || 'none')) opt.selected = true;
+    select.appendChild(opt);
+  }
+
+  // Position near click
+  picker.style.left = (screenX + 16) + 'px';
+  picker.style.top = (screenY - 20) + 'px';
+  picker.style.display = 'block';
+
+  // Handle change
+  select.onchange = async () => {
+    const newType = select.value;
+    if (newType !== 'none') await loadSkinTextureSet(newType);
+    const oldMat = skin.mesh.material;
+    skin.skinType = newType;
+    const skinCol = getSkinColor(skin.atomIds);
+    skin.mesh.material = createSkinMaterial(skinCol, newType);
+    oldMat.dispose();
+    picker.style.display = 'none';
+  };
+}
+
+function hideSkinPicker() {
+  document.getElementById('skin-picker').style.display = 'none';
 }
 
 // ===========================================================================
@@ -1469,10 +1634,18 @@ async function init() {
   controls.target.set(0, 0, 0);
 
   scene.add(new THREE.AmbientLight(0xffffff, AMBIENT_INTENSITY));
-  const dl = new THREE.DirectionalLight(0xffffff, DIR_LIGHT_INTENSITY);
-  dl.position.set(...DIR_LIGHT_POS);
-  scene.add(dl);
   scene.add(new THREE.HemisphereLight(HEMI_SKY, HEMI_GROUND, HEMI_INTENSITY));
+
+  // 3-point lighting for PBR skin materials
+  const keyLight = new THREE.DirectionalLight(KEY_LIGHT_COLOR, KEY_LIGHT_INTENSITY);
+  keyLight.position.set(...KEY_LIGHT_POS);
+  scene.add(keyLight);
+  const fillLight = new THREE.DirectionalLight(FILL_LIGHT_COLOR, FILL_LIGHT_INTENSITY);
+  fillLight.position.set(...FILL_LIGHT_POS);
+  scene.add(fillLight);
+  const rimLight = new THREE.DirectionalLight(RIM_LIGHT_COLOR, RIM_LIGHT_INTENSITY);
+  rimLight.position.set(...RIM_LIGHT_POS);
+  scene.add(rimLight);
 
   const grid = new THREE.GridHelper(GROUND_SIZE, GROUND_DIVISIONS, GROUND_GRID_COLOR, GROUND_GRID_COLOR);
   grid.position.y = GROUND_Y;
@@ -1493,6 +1666,12 @@ async function init() {
   buildMachinesPanel();
   setupEvents();
   updateFreezeUI();
+
+  // Preload all available skin texture sets
+  for (const name of AVAILABLE_SKINS) {
+    if (name !== 'none') loadSkinTextureSet(name);
+  }
+
   animate();
 }
 
@@ -1783,8 +1962,13 @@ function onMouseMove(e) {
   hoveredAtom = findAtomUnderRay();
 }
 
+let mouseDownPos = { x: 0, y: 0 };
+const CLICK_THRESHOLD = 5; // pixels — distinguish click from drag
+
 function onMouseDown(e) {
   if (e.button !== 0 || isDraggingFromPalette || isDraggingMachine) return;
+  mouseDownPos.x = e.clientX; mouseDownPos.y = e.clientY;
+  hideSkinPicker();
   if (currentTool === 'select') {
     const atom = findAtomUnderRay();
     if (atom) {
@@ -1805,9 +1989,15 @@ function onMouseDown(e) {
   }
 }
 
-function onMouseUp() {
+function onMouseUp(e) {
   if (isDraggingAtom && selectedAtom) {
     checkAndFormConnections(selectedAtom);
+    // If it was a click (not a drag), show skin picker for this molecule
+    const dx = e.clientX - mouseDownPos.x, dy = e.clientY - mouseDownPos.y;
+    if (Math.sqrt(dx * dx + dy * dy) < CLICK_THRESHOLD) {
+      const skin = findSkinForAtom(selectedAtom.id);
+      if (skin) showSkinPicker(skin, e.clientX, e.clientY);
+    }
     isDraggingAtom = false; controls.enabled = true;
   }
 }
