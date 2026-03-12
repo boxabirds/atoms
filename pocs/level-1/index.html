@@ -882,7 +882,7 @@ function firePulse(atom, time) {
   const nozzleDir = new THREE.Vector3(0, 0, 1).applyQuaternion(atom.group.quaternion);
 
   // Recoil: push self backward (opposite of nozzle)
-  atom.velocity.addScaledVector(nozzleDir, -PULSE_FORCE_STRENGTH * 0.5);
+  atom.velocity.addScaledVector(nozzleDir, -PULSE_FORCE_STRENGTH * 0.3);
 
   // Push connected atoms forward (along nozzle direction)
   // Plus: if near ground, add upward component for "kicking off ground" locomotion
@@ -1085,6 +1085,29 @@ function updatePhysics(dt) {
       atom.velocity.z *= GROUND_FRICTION;
     } else {
       atom.grounded = false;
+    }
+
+    // Arena wall bouncing (X and Z bounds)
+    const r = getCollisionRadius(atom);
+    if (atom.group.position.x > ARENA_HALF - r) {
+      atom.group.position.x = ARENA_HALF - r;
+      atom.velocity.x = -Math.abs(atom.velocity.x) * WALL_BOUNCE;
+    } else if (atom.group.position.x < -ARENA_HALF + r) {
+      atom.group.position.x = -ARENA_HALF + r;
+      atom.velocity.x = Math.abs(atom.velocity.x) * WALL_BOUNCE;
+    }
+    if (atom.group.position.z > ARENA_HALF - r) {
+      atom.group.position.z = ARENA_HALF - r;
+      atom.velocity.z = -Math.abs(atom.velocity.z) * WALL_BOUNCE;
+    } else if (atom.group.position.z < -ARENA_HALF + r) {
+      atom.group.position.z = -ARENA_HALF + r;
+      atom.velocity.z = Math.abs(atom.velocity.z) * WALL_BOUNCE;
+    }
+
+    // Velocity cap — prevent anything from going ballistic
+    const speed = atom.velocity.length();
+    if (speed > VELOCITY_CAP) {
+      atom.velocity.multiplyScalar(VELOCITY_CAP / speed);
     }
 
     // Spring constraints from connections

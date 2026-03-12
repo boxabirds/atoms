@@ -88,8 +88,8 @@ body,
 
 .history-item {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: 8px;
   padding: 10px;
   border-radius: 8px;
   cursor: pointer;
@@ -107,6 +107,13 @@ body,
   background: rgba(102, 102, 204, 0.1);
 }
 
+/* Main row inside a history item */
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .history-thumb {
   width: 48px;
   height: 48px;
@@ -114,6 +121,10 @@ body,
   object-fit: cover;
   flex-shrink: 0;
   background: #1a1a2e;
+}
+
+.history-thumb-empty {
+  border: 1px dashed #333;
 }
 
 .history-info {
@@ -128,10 +139,20 @@ body,
   text-overflow: ellipsis;
 }
 
+.history-meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+
 .history-time {
   font-size: 11px;
   color: #666;
-  margin-top: 2px;
+}
+
+.history-map-count {
+  font-size: 11px;
+  color: #6666cc;
 }
 
 .history-download {
@@ -151,6 +172,46 @@ body,
   color: #fff;
 }
 
+/* ── Map Thumbnails (expanded row on active item) ── */
+.map-thumbs {
+  display: flex;
+  gap: 6px;
+  padding-left: 58px; /* align with content past main thumb */
+  flex-wrap: wrap;
+}
+
+.map-thumb-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  background: none;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.map-thumb-btn:hover {
+  border-color: #6666cc;
+  background: rgba(102, 102, 204, 0.1);
+}
+
+.map-thumb-img {
+  width: 36px;
+  height: 36px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.map-thumb-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #888;
+}
+
 /* ── Empty State ── */
 .empty-state {
   display: flex;
@@ -162,6 +223,24 @@ body,
   text-align: center;
   padding: 24px;
   line-height: 1.5;
+}
+
+/* ── Loading Status ── */
+.loading-status {
+  font-size: 12px;
+  color: #8888cc;
+  padding: 4px 0;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 /* ── Prompt Input ── */
@@ -218,7 +297,7 @@ body,
   cursor: not-allowed;
 }
 
-/* ── Scrollbar Styling ── */
+/* ── Scrollbar ── */
 .history-list::-webkit-scrollbar {
   width: 6px;
 }

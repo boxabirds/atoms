@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { HistoryEntry, MapKey } from '../lib/types';
 import { DEFAULT_SCALARS } from '../lib/types';
 
@@ -67,12 +68,11 @@ function initScene(canvas: HTMLCanvasElement): SceneState {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0a1a);
 
-  // Environment map for reflections on metallic/transmissive surfaces
+  // Studio environment for PBR reflections (metallic surfaces, transmission, etc.)
+  // RoomEnvironment provides soft box lights that give metals visible reflections.
+  // scene.background stays dark for aesthetics; scene.environment drives shading.
   const pmrem = new THREE.PMREMGenerator(renderer);
-  const envScene = new THREE.Scene();
-  envScene.background = new THREE.Color(0x222244);
-  const envMap = pmrem.fromScene(envScene).texture;
-  scene.environment = envMap;
+  scene.environment = pmrem.fromScene(new RoomEnvironment()).texture;
   pmrem.dispose();
 
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
@@ -199,9 +199,12 @@ function applyEntry(state: SceneState, entry: HistoryEntry) {
       }
     }
 
-    // When albedo map is applied, set base color to white so the texture shows through
+    // Color handling: albedo map → white base so texture shows through,
+    // else use scalar baseColor from discriminator, else keep neutral
     if (maps.albedo) {
       mat.color.setHex(0xffffff);
+    } else if (s.baseColor) {
+      mat.color.setStyle(s.baseColor);
     }
 
     mat.needsUpdate = true;

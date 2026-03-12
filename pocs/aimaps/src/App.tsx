@@ -38,11 +38,16 @@ function makeSeamless(srcDataUrl: string): Promise<string> {
 
       const out = ctx.createImageData(w, h);
       for (let y = 0; y < h; y++) {
-        const dy = Math.abs(y - hh) / hh;
+        // Use per-axis smoothstep then combine — blends each edge independently
+        // so horizontal and vertical seams both get full coverage
+        const fy = Math.abs(y - hh) / hh; // 0 at center, 1 at edge
+        const sy = fy * fy * (3 - 2 * fy);
         for (let x = 0; x < w; x++) {
-          const dx = Math.abs(x - hw) / hw;
-          const t = Math.max(dx, dy);
-          const blend = t * t * (3 - 2 * t);
+          const fx = Math.abs(x - hw) / hw;
+          const sx = fx * fx * (3 - 2 * fx);
+          // Combine: 1-(1-sx)*(1-sy) ensures each axis contributes independently
+          // Both edges and corners get full shifted weight
+          const blend = 1 - (1 - sx) * (1 - sy);
           const idx = (y * w + x) * 4;
           for (let c = 0; c < 4; c++) {
             out.data[idx + c] =

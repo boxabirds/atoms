@@ -20,6 +20,8 @@ export interface MaterialScalars {
   displacementScale: number;
   emissiveIntensity: number;
   emissiveColor: string | null;
+  /** Base color hex (e.g. "#FFD700") used when albedo is uniform / no albedo map */
+  baseColor: string | null;
 }
 
 export interface MaterialRecipe {
@@ -46,4 +48,5 @@ export const DEFAULT_SCALARS: MaterialScalars = {
   displacementScale: 0.15,
   emissiveIntensity: 0,
   emissiveColor: null,
+  baseColor: null,
 };

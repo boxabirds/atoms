@@ -58,6 +58,8 @@ const DISCRIMINATOR_SYSTEM =
   `- Normal maps are NEVER generated — always derived from displacement.\n` +
   `- If a property is uniform, set its scalar and do NOT include it in mapsToGenerate.\n` +
   `- If it varies spatially, include it in mapsToGenerate with a vivid description in mapDescriptions.\n` +
+  `- For ALBEDO specifically: if the color is uniform (e.g. "gold"), set baseColor to a hex string (e.g. "#FFD700") and do NOT include albedo in mapsToGenerate. If the color varies spatially (e.g. "rusty gold"), include albedo in mapsToGenerate AND set baseColor to null.\n` +
+  `- ALWAYS set baseColor to SOMETHING unless an albedo map is being generated. The user's color intent must be captured either way.\n` +
   `- Displacement is skipped for smooth/flat surfaces.\n` +
   `- Emissive is skipped unless the description implies light emission.\n` +
   `- displacementScale range: 0.05 (subtle) to 0.3 (dramatic).\n` +
@@ -74,6 +76,7 @@ const DISCRIMINATOR_SYSTEM =
   `    "thickness": 0,\n` +
   `    "ior": 1.5,\n` +
   `    "displacementScale": 0.15,\n` +
+  `    "baseColor": "#FFD700",\n` +
   `    "emissiveIntensity": 0,\n` +
   `    "emissiveColor": null\n` +
   `  }\n` +
