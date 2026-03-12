@@ -103,6 +103,31 @@
   }
   .tool-btn .icon { font-size: 15px; width: 18px; text-align: center; }
 
+  /* ---- Skin slider ---- */
+  .slider-group {
+    display: flex; flex-direction: column; gap: 4px;
+    padding: 4px 4px 2px;
+  }
+  .slider-group .slider-label {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 1px;
+  }
+  .slider-group .slider-label .slider-value { color: #999; font-weight: 600; }
+  .slider-group input[type="range"] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 2px; outline: none;
+  }
+  .slider-group input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #4fc3f7;
+    cursor: pointer;
+    box-shadow: 0 0 6px rgba(79, 195, 247, 0.4);
+  }
+
   /* ---- Right Panel: Machines ---- */
   #machines { right: 16px; min-width: 170px; max-width: 190px; max-height: 80vh; overflow-y: auto; }
   #machines::-webkit-scrollbar { width: 4px; }
@@ -255,6 +280,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 
 // ===========================================================================
 // CONSTANTS
@@ -318,6 +344,14 @@ const FLEX_COLLISION_RADIUS = 0.11;
 const ARENA_HALF = GROUND_SIZE * 0.5;
 const WALL_BOUNCE = 0.5;             // velocity retained on wall bounce
 const VELOCITY_CAP = 8.0;            // max speed any atom can reach
+
+// Skin mesh
+const SKIN_DEFAULT_OPACITY = 0.5;
+const SKIN_COLOR = 0x66bbdd;
+const SKIN_EMISSIVE = 0x224466;
+const SKIN_EMISSIVE_INTENSITY = 0.2;
+const SKIN_PADDING = 0.18;           // extra padding beyond atom surface
+const SKIN_MIN_ATOMS = 2;            // minimum atoms in a molecule to get a skin
 
 const RAYCAST_THRESHOLD = 0.4;
 
@@ -466,6 +500,10 @@ let isDraggingFromPalette = false;
 let dragAtomType = null;
 let isDraggingMachine = false;
 let hoveredAtom = null;
+
+// Skin system
+const skinMeshes = [];     // { mesh, atomIds[] }
+let skinOpacity = SKIN_DEFAULT_OPACITY;
 
 // ===========================================================================
 // UTILITIES
@@ -1024,6 +1062,182 @@ function updateTendrils() {
 }
 
 // ===========================================================================
+// SKIN SYSTEM — convex hull meshes over connected molecules
+// ===========================================================================
+
+function findMolecules() {
+  // BFS to find connected components
+  const visited = new Set();
+  const molecules = [];
+
+  for (const atom of atoms) {
+    if (visited.has(atom.id)) continue;
+    const component = [];
+    const queue = [atom.id];
+    visited.add(atom.id);
+
+    while (queue.length > 0) {
+      const id = queue.shift();
+      component.push(id);
+      const a = atoms.find(x => x.id === id);
+      if (!a) continue;
+      for (const conn of a.connections) {
+        const neighbor = conn.fromAtomId === id ? conn.toAtomId : conn.fromAtomId;
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor);
+          queue.push(neighbor);
+        }
+      }
+    }
+
+    if (component.length >= SKIN_MIN_ATOMS) {
+      molecules.push(component);
+    }
+  }
+  return molecules;
+}
+
+function updateSkins() {
+  const molecules = findMolecules();
+
+  // Diff: reuse existing skins where the atom set matches, remove stale, create new
+  const newSkinMeshes = [];
+  const usedOldIndices = new Set();
+
+  for (const mol of molecules) {
+    const sortedIds = [...mol].sort((a, b) => a - b);
+    const key = sortedIds.join(',');
+
+    // Try to find existing skin for this molecule
+    let existing = null;
+    for (let i = 0; i < skinMeshes.length; i++) {
+      if (usedOldIndices.has(i)) continue;
+      const oldKey = [...skinMeshes[i].atomIds].sort((a, b) => a - b).join(',');
+      if (oldKey === key) {
+        existing = skinMeshes[i];
+        usedOldIndices.add(i);
+        break;
+      }
+    }
+
+    // Gather world positions with inflation
+    const positions = [];
+    const center = new THREE.Vector3();
+    for (const id of mol) {
+      const a = atoms.find(x => x.id === id);
+      if (a) center.add(a.group.position);
+    }
+    center.divideScalar(mol.length);
+
+    // Generate hull sample points on the OUTSIDE of each atom's surface + padding.
+    // 26 directions (6 cardinal + 8 corners + 12 edges) per atom gives a nice round hull.
+    const HULL_DIRS = [];
+    for (let x = -1; x <= 1; x++) {
+      for (let y = -1; y <= 1; y++) {
+        for (let z = -1; z <= 1; z++) {
+          if (x === 0 && y === 0 && z === 0) continue;
+          HULL_DIRS.push(new THREE.Vector3(x, y, z).normalize());
+        }
+      }
+    }
+
+    for (const id of mol) {
+      const a = atoms.find(x => x.id === id);
+      if (!a) continue;
+      const atomPos = a.group.position;
+      // Effective radius: visual radius + padding
+      const r = (a.type === 'flex' ? FLEX_RADIUS : ATOM_RADIUS) + SKIN_PADDING;
+
+      for (const dir of HULL_DIRS) {
+        positions.push(atomPos.clone().addScaledVector(dir, r));
+      }
+
+      // For FLEX, also sample along the capsule length
+      if (a.type === 'flex') {
+        const capsuleDir = new THREE.Vector3(0, 0, 1).applyQuaternion(a.group.quaternion);
+        const halfLen = FLEX_LENGTH * 0.5;
+        const endR = FLEX_RADIUS + SKIN_PADDING;
+        for (const sign of [-1, 1]) {
+          const endCenter = atomPos.clone().addScaledVector(capsuleDir, halfLen * sign);
+          for (const dir of HULL_DIRS) {
+            positions.push(endCenter.clone().addScaledVector(dir, endR));
+          }
+        }
+      }
+    }
+
+    if (positions.length < 4) continue; // ConvexGeometry needs 4+ non-coplanar points
+
+    try {
+      const geo = new ConvexGeometry(positions);
+
+      if (existing) {
+        // Update existing mesh geometry
+        existing.mesh.geometry.dispose();
+        existing.mesh.geometry = geo;
+        existing.atomIds = mol;
+        newSkinMeshes.push(existing);
+      } else {
+        // Create new skin mesh — tinted by dominant atom type
+        const skinCol = getSkinColor(mol);
+        const mat = new THREE.MeshStandardMaterial({
+          color: skinCol.color,
+          emissive: skinCol.emissive,
+          emissiveIntensity: SKIN_EMISSIVE_INTENSITY,
+          transparent: true,
+          opacity: skinOpacity,
+          side: THREE.DoubleSide,
+          roughness: 0.6,
+          metalness: 0.05,
+          depthWrite: false,
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.renderOrder = 1; // render after opaque atoms
+        scene.add(mesh);
+        newSkinMeshes.push({ mesh, atomIds: mol });
+      }
+    } catch (e) {
+      // ConvexGeometry can fail with coplanar points — skip silently
+      if (existing) newSkinMeshes.push(existing);
+    }
+  }
+
+  // Remove orphaned skins
+  for (let i = 0; i < skinMeshes.length; i++) {
+    if (!usedOldIndices.has(i)) {
+      skinMeshes[i].mesh.geometry.dispose();
+      skinMeshes[i].mesh.material.dispose();
+      scene.remove(skinMeshes[i].mesh);
+    }
+  }
+
+  skinMeshes.length = 0;
+  skinMeshes.push(...newSkinMeshes);
+}
+
+function updateSkinOpacity() {
+  for (const skin of skinMeshes) {
+    skin.mesh.material.opacity = skinOpacity;
+  }
+}
+
+// Color skins per molecule based on dominant atom type
+function getSkinColor(mol) {
+  const counts = {};
+  for (const id of mol) {
+    const a = atoms.find(x => x.id === id);
+    if (a) counts[a.type] = (counts[a.type] || 0) + 1;
+  }
+  let dominant = 'flex';
+  let maxCount = 0;
+  for (const [type, count] of Object.entries(counts)) {
+    if (count > maxCount) { maxCount = count; dominant = type; }
+  }
+  const def = ATOM_DEFS[dominant];
+  return { color: def.color, emissive: def.emissive };
+}
+
+// ===========================================================================
 // PHYSICS
 // ===========================================================================
 
@@ -1285,9 +1499,33 @@ function buildPalette() {
     for (const c of [...connections]) removeConnection(c);
     for (const a of [...atoms]) scene.remove(a.group);
     atoms.length = 0; connections.length = 0; nextAtomId = 0; undoHistory.length = 0;
+    for (const s of skinMeshes) { s.mesh.geometry.dispose(); s.mesh.material.dispose(); scene.remove(s.mesh); }
+    skinMeshes.length = 0;
     updateAtomCount(); showToast('Cleared');
   });
   pal.appendChild(clrBtn);
+
+  // Skin separator + slider
+  pal.appendChild(Object.assign(document.createElement('div'), { className: 'tool-sep' }));
+
+  const sliderGroup = document.createElement('div');
+  sliderGroup.className = 'slider-group';
+
+  const sliderLabel = document.createElement('div');
+  sliderLabel.className = 'slider-label';
+  sliderLabel.innerHTML = '<span>Skin</span><span class="slider-value" id="skin-value">50%</span>';
+
+  const slider = document.createElement('input');
+  slider.type = 'range'; slider.min = '0'; slider.max = '100'; slider.value = '50';
+  slider.id = 'skin-slider';
+  slider.addEventListener('input', (e) => {
+    skinOpacity = parseInt(e.target.value) / 100;
+    document.getElementById('skin-value').textContent = e.target.value + '%';
+    updateSkinOpacity();
+  });
+
+  sliderGroup.append(sliderLabel, slider);
+  pal.appendChild(sliderGroup);
 }
 
 // ===========================================================================
@@ -1620,6 +1858,7 @@ function animate() {
   updateConnectionBridges();
   updateTendrils();
   updateAtomAnimations(time);
+  if (skinOpacity > 0) updateSkins();
 
   if (currentTool === 'select')
     renderer.domElement.style.cursor = isDraggingAtom ? 'grabbing' : (hoveredAtom ? 'grab' : 'crosshair');

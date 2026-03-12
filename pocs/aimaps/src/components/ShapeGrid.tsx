@@ -4,6 +4,13 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { HistoryEntry, MapKey } from '../lib/types';
 import { DEFAULT_SCALARS } from '../lib/types';
+import {
+  loadDisplacementData,
+  displace,
+  averageSeamNormals,
+  buildSeamGroups,
+} from '../lib/cpu-displacement';
+import type { DisplacementData } from '../lib/cpu-displacement';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -48,6 +55,14 @@ interface SceneState {
   frameId: number;
   /** Cache loaded textures to avoid reloading unchanged maps */
   textureCache: Map<string, THREE.Texture>;
+  /** Pristine vertex positions before any displacement */
+  originalPositions: Float32Array[];
+  /** Pristine vertex normals before any displacement */
+  originalNormals: Float32Array[];
+  /** Pre-computed seam vertex groups per mesh (vertices sharing position but differing UVs) */
+  seamGroups: number[][][];
+  /** Cache decoded displacement pixel data by data-URL */
+  displacementCache: Map<string, DisplacementData>;
 }
 
 function createGeometries(): THREE.BufferGeometry[] {
