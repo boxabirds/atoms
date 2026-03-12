@@ -1174,8 +1174,9 @@ function createSkinGeometry() {
 }
 
 // Write ConvexGeometry output into a pre-allocated skin geometry.
+// If skinType has displacement data, offsets vertices along normals.
 // Returns true if data fit, false if hull exceeded SKIN_MAX_VERTS.
-function writeSkinData(targetGeo, hullPositions) {
+function writeSkinData(targetGeo, hullPositions, skinType) {
   const hull = new ConvexGeometry(hullPositions);
   const hullPos = hull.getAttribute('position');
   const hullNorm = hull.getAttribute('normal');
@@ -1186,13 +1187,34 @@ function writeSkinData(targetGeo, hullPositions) {
     return false;
   }
 
+  const posArr = hullPos.array;
+  const normArr = hullNorm.array;
+
+  // Apply CPU displacement if available for this skin type
+  const texSet = skinType && skinType !== 'none' ? skinTextureCache.get(skinType) : null;
+  if (texSet && texSet._dispPixels) {
+    const pixels = texSet._dispPixels;
+    const size = texSet._dispSize;
+    const scale = SKIN_TEXTURE_SCALE;
+    for (let i = 0; i < count; i++) {
+      const i3 = i * 3;
+      const px = posArr[i3], py = posArr[i3 + 1], pz = posArr[i3 + 2];
+      const nx = normArr[i3], ny = normArr[i3 + 1], nz = normArr[i3 + 2];
+      const d = sampleDisplacement(pixels, size, px, py, pz, nx, ny, nz, scale);
+      const offset = (d - 0.5) * DISPLACEMENT_STRENGTH; // center around 0
+      posArr[i3]     += nx * offset;
+      posArr[i3 + 1] += ny * offset;
+      posArr[i3 + 2] += nz * offset;
+    }
+  }
+
   const tPos = targetGeo.getAttribute('position');
   const tNorm = targetGeo.getAttribute('normal');
 
-  tPos.array.set(hullPos.array.subarray(0, count * 3));
+  tPos.array.set(posArr.subarray(0, count * 3));
   tPos.needsUpdate = true;
 
-  tNorm.array.set(hullNorm.array.subarray(0, count * 3));
+  tNorm.array.set(normArr.subarray(0, count * 3));
   tNorm.needsUpdate = true;
 
   targetGeo.setDrawRange(0, count);
@@ -1250,9 +1272,10 @@ function updateSkins() {
     const existing = usedKeys.get(key);
     if (existing && !claimed.has(key)) {
       // Reuse mesh — just overwrite vertex data in the pre-allocated buffers
-      if (writeSkinData(existing.mesh.geometry, positions)) {
+      const existingSkinType = existing.skinType || 'none';
+      if (writeSkinData(existing.mesh.geometry, positions, existingSkinType)) {
         existing.atomIds = mol;
-        existing.skinType = existing.skinType || 'none';
+        existing.skinType = existingSkinType;
         claimed.add(key);
         newSkinMeshes.push(existing);
       }
@@ -1311,8 +1334,9 @@ function getSkinColor(mol) {
 // PBR SKIN TEXTURES — triplanar mapped onto dynamic convex hulls
 // ---------------------------------------------------------------------------
 
-const MAP_TYPES = ['albedo', 'normal', 'roughness', 'metalness'];
+const MAP_TYPES = ['albedo', 'normal', 'roughness', 'metalness', 'displacement'];
 const textureLoader = new THREE.TextureLoader();
+const DISPLACEMENT_STRENGTH = 0.12; // world-space offset along normal
 
 async function loadSkinTextureSet(name) {
   if (name === 'none' || skinTextureCache.has(name)) return;
@@ -1325,12 +1349,42 @@ async function loadSkinTextureSet(name) {
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
         tex.colorSpace = type === 'albedo' ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
         textures[type] = tex;
+
+        // Decode displacement to CPU-readable pixels for vertex offset
+        if (type === 'displacement') {
+          const img = tex.image;
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width; canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          textures._dispPixels = ctx.getImageData(0, 0, img.width, img.height);
+          textures._dispSize = img.width; // assumed square
+        }
+
         resolve();
       }, undefined, () => resolve()); // silently skip missing maps
     });
   });
   await Promise.all(promises);
   skinTextureCache.set(name, textures);
+}
+
+// CPU triplanar displacement sample: blend 3 axis projections weighted by normal
+function sampleDisplacement(pixels, size, px, py, pz, nx, ny, nz, scale) {
+  const abs_nx = Math.abs(nx), abs_ny = Math.abs(ny), abs_nz = Math.abs(nz);
+  const sum = abs_nx + abs_ny + abs_nz || 1;
+  const wx = abs_nx / sum, wy = abs_ny / sum, wz = abs_nz / sum;
+
+  // Wrap UV to [0,1) then to pixel coords
+  const wrap = v => ((v * scale % 1) + 1) % 1;
+  const sample = (u, v) => {
+    const ix = (wrap(u) * size) | 0;
+    const iy = (wrap(v) * size) | 0;
+    return pixels.data[(iy * size + ix) * 4] / 255; // red channel, 0-1
+  };
+
+  // X-axis projection (YZ plane), Y-axis (XZ), Z-axis (XY)
+  return sample(py, pz) * wx + sample(px, pz) * wy + sample(px, py) * wz;
 }
 
 function createSkinMaterial(skinCol, skinType) {
