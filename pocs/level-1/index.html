@@ -1,0 +1,1588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ATOM — World Builder</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a14;
+    overflow: hidden;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    color: #e0e0e0;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  canvas { display: block; width: 100%; height: 100%; }
+
+  /* ---- Floating Palette ---- */
+  #palette {
+    position: fixed;
+    top: 50%;
+    left: 16px;
+    transform: translateY(-50%);
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: rgba(10, 10, 20, 0.55);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 14px;
+    padding: 14px 12px;
+    min-width: 140px;
+  }
+
+  #palette h3 {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #555;
+    margin-bottom: 2px;
+    text-align: center;
+  }
+
+  .atom-btn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    color: #aaa;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: grab;
+    transition: all 0.15s ease;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .atom-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.15);
+    transform: translateX(2px);
+  }
+  .atom-btn.active {
+    border-color: var(--atom-color);
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    box-shadow: 0 0 12px rgba(var(--atom-rgb), 0.3);
+  }
+  .atom-btn .dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    box-shadow: 0 0 6px currentColor;
+  }
+  .atom-btn .dot.capsule {
+    border-radius: 7px;
+    width: 22px;
+    height: 10px;
+  }
+  .atom-btn .label { font-size: 12px; }
+  .atom-btn .hint {
+    font-size: 9px;
+    color: #666;
+    margin-left: auto;
+  }
+
+  /* ---- Tool buttons ---- */
+  .tool-sep {
+    height: 1px;
+    background: rgba(255, 255, 255, 0.06);
+    margin: 4px 0;
+  }
+
+  .tool-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    color: #888;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .tool-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #ccc;
+  }
+  .tool-btn.active {
+    background: rgba(79, 195, 247, 0.15);
+    border-color: rgba(79, 195, 247, 0.4);
+    color: #4fc3f7;
+  }
+  .tool-btn .icon { font-size: 15px; width: 18px; text-align: center; }
+
+  /* ---- Top HUD ---- */
+  #hud-top {
+    position: fixed;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  #freeze-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 18px;
+    background: rgba(10, 10, 20, 0.6);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 20px;
+    color: #888;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  #freeze-btn:hover { color: #bbb; border-color: rgba(255, 255, 255, 0.2); }
+  #freeze-btn.frozen {
+    color: #4fc3f7;
+    border-color: rgba(79, 195, 247, 0.5);
+    background: rgba(79, 195, 247, 0.12);
+    box-shadow: 0 0 20px rgba(79, 195, 247, 0.15);
+  }
+  #freeze-btn .icon { font-size: 14px; }
+
+  #atom-count {
+    padding: 5px 14px;
+    background: rgba(10, 10, 20, 0.5);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 20px;
+    font-size: 11px;
+    color: #666;
+    letter-spacing: 0.5px;
+  }
+
+  /* ---- Bottom hint ---- */
+  #hint-bar {
+    position: fixed;
+    bottom: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 20;
+    padding: 5px 20px;
+    background: rgba(10, 10, 20, 0.5);
+    backdrop-filter: blur(8px);
+    border-radius: 20px;
+    font-size: 11px;
+    color: #555;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+
+  /* ---- Toast ---- */
+  #toast {
+    position: fixed;
+    bottom: 50px;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: rgba(79, 195, 247, 0.9);
+    color: #0a0a1e;
+    padding: 8px 24px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    opacity: 0;
+    transition: opacity 0.3s, transform 0.3s;
+    pointer-events: none;
+    z-index: 100;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* Drag ghost on cursor */
+  #drag-ghost {
+    position: fixed;
+    pointer-events: none;
+    z-index: 1000;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    opacity: 0.7;
+    display: none;
+    transform: translate(-50%, -50%);
+    box-shadow: 0 0 16px currentColor;
+  }
+  #drag-ghost.capsule {
+    border-radius: 14px;
+    width: 36px;
+    height: 18px;
+  }
+</style>
+</head>
+<body>
+
+<!-- Floating atom palette -->
+<div id="palette">
+  <h3>Atoms</h3>
+  <!-- populated by JS -->
+</div>
+
+<!-- Top HUD -->
+<div id="hud-top">
+  <button id="freeze-btn" class="frozen">
+    <span class="icon">❄</span>
+    <span id="freeze-label">Frozen</span>
+    <span style="font-size:10px;color:#666;margin-left:4px">[Space]</span>
+  </button>
+  <div id="atom-count">0 atoms</div>
+</div>
+
+<!-- Bottom hint -->
+<div id="hint-bar">
+  Drag atom from palette · Click to place · [V] select tool · [Space] freeze/unfreeze · Right-click remove · [Ctrl+Z] undo
+</div>
+
+<div id="toast"></div>
+<div id="drag-ghost"></div>
+
+<!-- Three.js import map -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.171.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ===========================================================================
+// CONSTANTS
+// ===========================================================================
+
+// -- Scene --
+const BG_COLOR = 0x0a0a14;
+const FOG_NEAR = 15;
+const FOG_FAR = 60;
+
+// -- Ground --
+const GROUND_SIZE = 40;
+const GROUND_DIVISIONS = 40;
+const GROUND_GRID_COLOR = 0x1a1a30;
+const GROUND_Y = -2;
+
+// -- Camera --
+const CAMERA_FOV = 50;
+const CAMERA_NEAR = 0.1;
+const CAMERA_FAR = 100;
+const CAMERA_INITIAL_POS = [3, 2.5, 5];
+const ORBIT_DAMPING = 0.08;
+
+// -- Lighting --
+const AMBIENT_INTENSITY = 0.4;
+const DIRECTIONAL_INTENSITY = 1.0;
+const DIRECTIONAL_POS = [5, 10, 7];
+const HEMISPHERE_SKY = 0x4466aa;
+const HEMISPHERE_GROUND = 0x1a1a2e;
+const HEMISPHERE_INTENSITY = 0.5;
+
+// -- Atom sizes --
+const ATOM_RADIUS = 0.25;
+const ATOM_SEGMENTS = 28;
+const FLEX_RADIUS = 0.12;
+const FLEX_LENGTH = 0.6;
+const FLEX_CAP_SEGMENTS = 12;
+
+// -- Connection --
+const CONNECTION_SNAP_DISTANCE = 0.55;
+const CONNECTION_SHOW_DISTANCE = 1.2;
+const NODE_RADIUS = 0.045;
+const NODE_SEGMENTS = 10;
+const NODE_COUNT_SPHERE = 6;  // connection nodes on sphere atoms
+const NODE_COUNT_FLEX = 2;    // connection nodes on flex (ends only)
+const CONNECTION_BRIDGE_RADIUS = 0.015;
+const CONNECTION_BRIDGE_COLOR = 0x88ddff;
+const TENDRIL_COLOR = 0x44aadd;
+
+// -- Ghost preview --
+const GHOST_OPACITY = 0.35;
+
+// -- Snap animation --
+const SNAP_DURATION_MS = 250;
+const SNAP_OVERSHOOT = 1.15;
+
+// -- Breathing animation --
+const BREATH_SPEED = 1.5;
+const BREATH_AMPLITUDE = 0.02;
+
+// -- Active pulse animation --
+const PULSE_KICK_SCALE = 1.2;
+const PULSE_KICK_DURATION_MS = 150;
+
+// -- Physics --
+const GRAVITY = -9.8;
+const PHYSICS_TIMESTEP = 1 / 60;
+const DAMPING = 0.95;
+const GROUND_RESTITUTION = 0.3;
+
+// -- Raycaster --
+const RAYCAST_THRESHOLD = 0.4;
+
+// -- Atom visual definitions --
+const ATOM_DEFS = {
+  pulse: {
+    name: 'PULSE',
+    hint: 'Force',
+    color: 0xe8603c,
+    emissive: 0xcc4422,
+    emissiveIntensity: 0.3,
+    rgb: '232,96,60',
+    description: 'Emits force impulse — the muscle'
+  },
+  sense: {
+    name: 'SENSE',
+    hint: 'Detect',
+    color: 0x3498db,
+    emissive: 0x2277bb,
+    emissiveIntensity: 0.4,
+    rgb: '52,152,219',
+    description: 'Detects conditions — the nerve ending'
+  },
+  relay: {
+    name: 'RELAY',
+    hint: 'Logic',
+    color: 0xa8c744,
+    emissive: 0x88aa22,
+    emissiveIntensity: 0.25,
+    rgb: '168,199,68',
+    description: 'Pass/block/invert signals — the synapse'
+  },
+  hold: {
+    name: 'HOLD',
+    hint: 'Memory',
+    color: 0x8844cc,
+    emissive: 0x7733bb,
+    emissiveIntensity: 0.35,
+    rgb: '136,68,204',
+    description: 'Toggle on/off state — the neuron'
+  },
+  flex: {
+    name: 'FLEX',
+    hint: 'Joint',
+    color: 0xc0c0c8,
+    emissive: 0x888890,
+    emissiveIntensity: 0.15,
+    rgb: '192,192,200',
+    description: 'Rigid bone or elastic spring — the skeleton'
+  }
+};
+
+// ===========================================================================
+// STATE
+// ===========================================================================
+
+let renderer, scene, camera, controls;
+const raycaster = new THREE.Raycaster();
+const mouseNDC = new THREE.Vector2();
+const mouseScreen = new THREE.Vector2();
+
+// World state
+const atoms = [];       // { id, type, mesh, group, nodes[], connections[], velocity, grounded }
+const connections = [];  // { fromAtomId, toAtomId, fromNodeIdx, toNodeIdx, bridgeMesh }
+let nextAtomId = 0;
+const history = [];      // for undo
+
+// Tools
+let currentTool = null;        // null = place mode, 'select' = select/move
+let selectedAtomType = null;   // which atom type is being placed
+let selectedAtom = null;       // currently selected atom (for move tool)
+let isDraggingAtom = false;
+let dragPlane = new THREE.Plane();
+let dragOffset = new THREE.Vector3();
+let isFrozen = true;           // start frozen for assembly
+let ghostMesh = null;
+
+// Drag from palette
+let isDraggingFromPalette = false;
+let dragAtomType = null;
+
+// Hover state
+let hoveredAtom = null;
+
+// ===========================================================================
+// UTILITIES
+// ===========================================================================
+
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 1800);
+}
+
+function updateAtomCount() {
+  document.getElementById('atom-count').textContent = `${atoms.length} atom${atoms.length !== 1 ? 's' : ''}`;
+}
+
+// ===========================================================================
+// CONNECTION NODE POSITIONS
+// ===========================================================================
+
+// Returns world-space positions of connection nodes for an atom
+function getNodePositions(atom) {
+  const positions = [];
+  if (atom.type === 'flex') {
+    // Two ends of the capsule
+    const dir = new THREE.Vector3(0, 0, 1).applyQuaternion(atom.group.quaternion);
+    const halfLen = FLEX_LENGTH * 0.5;
+    positions.push(atom.group.position.clone().add(dir.clone().multiplyScalar(halfLen)));
+    positions.push(atom.group.position.clone().add(dir.clone().multiplyScalar(-halfLen)));
+  } else {
+    // 6 cardinal directions on sphere surface
+    const dirs = [
+      [0, 1, 0], [0, -1, 0],
+      [1, 0, 0], [-1, 0, 0],
+      [0, 0, 1], [0, 0, -1]
+    ];
+    for (const d of dirs) {
+      const offset = new THREE.Vector3(d[0], d[1], d[2]).multiplyScalar(ATOM_RADIUS);
+      positions.push(atom.group.position.clone().add(offset));
+    }
+  }
+  return positions;
+}
+
+// ===========================================================================
+// CREATE ATOM MESH
+// ===========================================================================
+
+function createAtomGroup(type, isGhost = false) {
+  const def = ATOM_DEFS[type];
+  const group = new THREE.Group();
+  group.userData.atomType = type;
+
+  const matOpts = {
+    color: def.color,
+    roughness: 0.35,
+    metalness: 0.15,
+    emissive: def.emissive,
+    emissiveIntensity: isGhost ? 0 : def.emissiveIntensity,
+  };
+
+  if (isGhost) {
+    matOpts.transparent = true;
+    matOpts.opacity = GHOST_OPACITY;
+  }
+
+  const mat = new THREE.MeshStandardMaterial(matOpts);
+
+  if (type === 'flex') {
+    // Capsule shape
+    const geo = new THREE.CapsuleGeometry(FLEX_RADIUS, FLEX_LENGTH, FLEX_CAP_SEGMENTS, FLEX_CAP_SEGMENTS);
+    const mesh = new THREE.Mesh(geo, mat);
+    // Rotate so length is along Z
+    mesh.rotation.x = Math.PI / 2;
+    group.add(mesh);
+
+    if (type === 'flex' && !isGhost) {
+      // Silver brushed feel
+      mat.metalness = 0.4;
+      mat.roughness = 0.25;
+    }
+  } else if (type === 'hold') {
+    // Translucent outer shell + inner nucleus
+    const outerGeo = new THREE.SphereGeometry(ATOM_RADIUS, ATOM_SEGMENTS, ATOM_SEGMENTS);
+    const outerMat = new THREE.MeshStandardMaterial({
+      color: def.color,
+      roughness: 0.3,
+      metalness: 0.1,
+      transparent: true,
+      opacity: isGhost ? GHOST_OPACITY : 0.45,
+      emissive: def.emissive,
+      emissiveIntensity: isGhost ? 0 : 0.15,
+    });
+    group.add(new THREE.Mesh(outerGeo, outerMat));
+
+    // Inner nucleus
+    const NUCLEUS_RADIUS = ATOM_RADIUS * 0.5;
+    const innerGeo = new THREE.SphereGeometry(NUCLEUS_RADIUS, 16, 16);
+    const innerMat = new THREE.MeshStandardMaterial({
+      color: 0xbb66ee,
+      emissive: 0xbb66ee,
+      emissiveIntensity: isGhost ? 0 : 0.6,
+      roughness: 0.2,
+      metalness: 0.3,
+    });
+    if (isGhost) {
+      innerMat.transparent = true;
+      innerMat.opacity = GHOST_OPACITY;
+    }
+    const innerMesh = new THREE.Mesh(innerGeo, innerMat);
+    group.add(innerMesh);
+    group.userData.nucleus = innerMesh;
+    group.userData.isOn = false;
+  } else if (type === 'sense') {
+    // Main sphere
+    const geo = new THREE.SphereGeometry(ATOM_RADIUS, ATOM_SEGMENTS, ATOM_SEGMENTS);
+    group.add(new THREE.Mesh(geo, mat));
+
+    // Detection cone (subtle, translucent)
+    if (!isGhost) {
+      const CONE_LENGTH = 0.5;
+      const CONE_RADIUS = 0.3;
+      const coneGeo = new THREE.ConeGeometry(CONE_RADIUS, CONE_LENGTH, 16, 1, true);
+      const coneMat = new THREE.MeshStandardMaterial({
+        color: 0x3498db,
+        emissive: 0x2288cc,
+        emissiveIntensity: 0.3,
+        transparent: true,
+        opacity: 0.12,
+        side: THREE.DoubleSide,
+      });
+      const cone = new THREE.Mesh(coneGeo, coneMat);
+      cone.rotation.x = -Math.PI / 2;
+      cone.position.z = ATOM_RADIUS + CONE_LENGTH * 0.5;
+      group.add(cone);
+      group.userData.cone = cone;
+    }
+
+    // Iris on front
+    if (!isGhost) {
+      const IRIS_RADIUS = 0.08;
+      const irisGeo = new THREE.CircleGeometry(IRIS_RADIUS, 16);
+      const irisMat = new THREE.MeshStandardMaterial({
+        color: 0x0a0a14,
+        emissive: 0x1155aa,
+        emissiveIntensity: 0.8,
+      });
+      const iris = new THREE.Mesh(irisGeo, irisMat);
+      iris.position.z = ATOM_RADIUS + 0.001;
+      group.add(iris);
+      group.userData.iris = iris;
+    }
+  } else if (type === 'pulse') {
+    const geo = new THREE.SphereGeometry(ATOM_RADIUS, ATOM_SEGMENTS, ATOM_SEGMENTS);
+    group.add(new THREE.Mesh(geo, mat));
+
+    // Nozzle dimple
+    if (!isGhost) {
+      const NOZZLE_RADIUS = 0.06;
+      const NOZZLE_DEPTH = 0.04;
+      const nozzleGeo = new THREE.CylinderGeometry(NOZZLE_RADIUS, NOZZLE_RADIUS * 0.4, NOZZLE_DEPTH, 12);
+      const nozzleMat = new THREE.MeshStandardMaterial({
+        color: 0x441100,
+        roughness: 0.8,
+      });
+      const nozzle = new THREE.Mesh(nozzleGeo, nozzleMat);
+      nozzle.rotation.x = Math.PI / 2;
+      nozzle.position.z = ATOM_RADIUS - NOZZLE_DEPTH * 0.3;
+      group.add(nozzle);
+    }
+  } else if (type === 'relay') {
+    const geo = new THREE.SphereGeometry(ATOM_RADIUS, ATOM_SEGMENTS, ATOM_SEGMENTS);
+    group.add(new THREE.Mesh(geo, mat));
+
+    // Visible groove/channel
+    if (!isGhost) {
+      const GROOVE_RADIUS = 0.02;
+      const groovePath = new THREE.LineCurve3(
+        new THREE.Vector3(-ATOM_RADIUS * 0.9, 0, 0),
+        new THREE.Vector3(ATOM_RADIUS * 0.9, 0, 0)
+      );
+      const grooveGeo = new THREE.TubeGeometry(groovePath, 8, GROOVE_RADIUS, 6, false);
+      const grooveMat = new THREE.MeshStandardMaterial({
+        color: 0xccff44,
+        emissive: 0xaadd22,
+        emissiveIntensity: 0.6,
+        transparent: true,
+        opacity: 0.7,
+      });
+      const groove = new THREE.Mesh(grooveGeo, grooveMat);
+      groove.position.y = ATOM_RADIUS * 0.15;
+      group.add(groove);
+      group.userData.groove = groove;
+      group.userData.relayMode = 'pass'; // pass, block, invert
+    }
+  } else {
+    // Fallback sphere
+    const geo = new THREE.SphereGeometry(ATOM_RADIUS, ATOM_SEGMENTS, ATOM_SEGMENTS);
+    group.add(new THREE.Mesh(geo, mat));
+  }
+
+  // Add connection node meshes (small glowing bumps)
+  if (!isGhost) {
+    const nodeGeo = new THREE.SphereGeometry(NODE_RADIUS, NODE_SEGMENTS, NODE_SEGMENTS);
+    const nodeMat = new THREE.MeshStandardMaterial({
+      color: 0x88ddff,
+      emissive: 0x44aacc,
+      emissiveIntensity: 1.0,
+      transparent: true,
+      opacity: 0.6,
+    });
+
+    const nodeCount = type === 'flex' ? NODE_COUNT_FLEX : NODE_COUNT_SPHERE;
+    const nodeMeshes = [];
+
+    if (type === 'flex') {
+      const halfLen = FLEX_LENGTH * 0.5;
+      for (const z of [halfLen, -halfLen]) {
+        const nm = new THREE.Mesh(nodeGeo, nodeMat.clone());
+        nm.position.set(0, 0, z);
+        group.add(nm);
+        nodeMeshes.push(nm);
+      }
+    } else {
+      const dirs = [
+        [0, 1, 0], [0, -1, 0],
+        [1, 0, 0], [-1, 0, 0],
+        [0, 0, 1], [0, 0, -1]
+      ];
+      for (const d of dirs) {
+        const nm = new THREE.Mesh(nodeGeo, nodeMat.clone());
+        nm.position.set(d[0] * ATOM_RADIUS, d[1] * ATOM_RADIUS, d[2] * ATOM_RADIUS);
+        group.add(nm);
+        nodeMeshes.push(nm);
+      }
+    }
+    group.userData.nodeMeshes = nodeMeshes;
+  }
+
+  return group;
+}
+
+// ===========================================================================
+// ATOM MANAGEMENT
+// ===========================================================================
+
+function addAtom(type, position) {
+  const id = nextAtomId++;
+  const group = createAtomGroup(type);
+  group.position.copy(position);
+  scene.add(group);
+
+  const atom = {
+    id,
+    type,
+    group,
+    connections: [],
+    velocity: new THREE.Vector3(),
+    grounded: false,
+    breathPhase: Math.random() * Math.PI * 2,
+  };
+
+  atoms.push(atom);
+  history.push({ action: 'add', atomId: id });
+  updateAtomCount();
+
+  // Snap-in animation
+  animateSnap(group);
+
+  // Check for nearby connections
+  if (!isDraggingAtom) {
+    checkAndFormConnections(atom);
+  }
+
+  return atom;
+}
+
+function removeAtom(id) {
+  const idx = atoms.findIndex(a => a.id === id);
+  if (idx === -1) return;
+
+  const atom = atoms[idx];
+
+  // Remove all connections involving this atom
+  const connsToRemove = connections.filter(c => c.fromAtomId === id || c.toAtomId === id);
+  for (const conn of connsToRemove) {
+    removeConnection(conn);
+  }
+
+  scene.remove(atom.group);
+  atoms.splice(idx, 1);
+  history.push({ action: 'remove', atomId: id, type: atom.type, position: atom.group.position.clone() });
+  updateAtomCount();
+
+  if (selectedAtom && selectedAtom.id === id) {
+    selectedAtom = null;
+  }
+}
+
+function animateSnap(group) {
+  const startTime = performance.now();
+  const startScale = 0.01;
+  group.scale.setScalar(startScale);
+
+  const tick = () => {
+    const elapsed = performance.now() - startTime;
+    const t = Math.min(elapsed / SNAP_DURATION_MS, 1);
+    const eased = t < 0.5
+      ? 2 * t * t
+      : 1 + (SNAP_OVERSHOOT - 1) * Math.sin(t * Math.PI) * (1 - t);
+    group.scale.setScalar(Math.max(startScale, Math.min(eased, SNAP_OVERSHOOT)));
+    if (t < 1) requestAnimationFrame(tick);
+    else group.scale.setScalar(1);
+  };
+  requestAnimationFrame(tick);
+}
+
+// ===========================================================================
+// CONNECTIONS
+// ===========================================================================
+
+function checkAndFormConnections(atom) {
+  const myNodes = getNodePositions(atom);
+
+  for (const other of atoms) {
+    if (other.id === atom.id) continue;
+
+    // Check if already connected
+    const alreadyConnected = connections.some(c =>
+      (c.fromAtomId === atom.id && c.toAtomId === other.id) ||
+      (c.fromAtomId === other.id && c.toAtomId === atom.id)
+    );
+    if (alreadyConnected) continue;
+
+    const otherNodes = getNodePositions(other);
+
+    // Find closest pair of nodes
+    let bestDist = CONNECTION_SNAP_DISTANCE;
+    let bestFromIdx = -1;
+    let bestToIdx = -1;
+
+    for (let i = 0; i < myNodes.length; i++) {
+      // Skip if this node is already occupied
+      if (isNodeOccupied(atom.id, i)) continue;
+
+      for (let j = 0; j < otherNodes.length; j++) {
+        if (isNodeOccupied(other.id, j)) continue;
+
+        const dist = myNodes[i].distanceTo(otherNodes[j]);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestFromIdx = i;
+          bestToIdx = j;
+        }
+      }
+    }
+
+    if (bestFromIdx >= 0) {
+      formConnection(atom.id, other.id, bestFromIdx, bestToIdx);
+    }
+  }
+}
+
+function isNodeOccupied(atomId, nodeIdx) {
+  return connections.some(c =>
+    (c.fromAtomId === atomId && c.fromNodeIdx === nodeIdx) ||
+    (c.toAtomId === atomId && c.toNodeIdx === nodeIdx)
+  );
+}
+
+function formConnection(fromAtomId, toAtomId, fromNodeIdx, toNodeIdx) {
+  // Create bridge mesh
+  const bridgeGeo = new THREE.CylinderGeometry(CONNECTION_BRIDGE_RADIUS, CONNECTION_BRIDGE_RADIUS, 1, 6);
+  const bridgeMat = new THREE.MeshStandardMaterial({
+    color: CONNECTION_BRIDGE_COLOR,
+    emissive: CONNECTION_BRIDGE_COLOR,
+    emissiveIntensity: 0.8,
+    transparent: true,
+    opacity: 0.7,
+  });
+  const bridge = new THREE.Mesh(bridgeGeo, bridgeMat);
+  scene.add(bridge);
+
+  const conn = { fromAtomId, toAtomId, fromNodeIdx, toNodeIdx, bridgeMesh: bridge };
+  connections.push(conn);
+
+  // Record on atoms
+  const fromAtom = atoms.find(a => a.id === fromAtomId);
+  const toAtom = atoms.find(a => a.id === toAtomId);
+  if (fromAtom) fromAtom.connections.push(conn);
+  if (toAtom) toAtom.connections.push(conn);
+
+  showToast('Connected!');
+}
+
+function removeConnection(conn) {
+  scene.remove(conn.bridgeMesh);
+  const idx = connections.indexOf(conn);
+  if (idx >= 0) connections.splice(idx, 1);
+
+  // Remove from atoms
+  for (const atom of atoms) {
+    const ci = atom.connections.indexOf(conn);
+    if (ci >= 0) atom.connections.splice(ci, 1);
+  }
+}
+
+function updateConnectionBridges() {
+  for (const conn of connections) {
+    const fromAtom = atoms.find(a => a.id === conn.fromAtomId);
+    const toAtom = atoms.find(a => a.id === conn.toAtomId);
+    if (!fromAtom || !toAtom) continue;
+
+    const fromNodes = getNodePositions(fromAtom);
+    const toNodes = getNodePositions(toAtom);
+    const from = fromNodes[conn.fromNodeIdx];
+    const to = toNodes[conn.toNodeIdx];
+
+    if (!from || !to) continue;
+
+    const mid = from.clone().add(to).multiplyScalar(0.5);
+    const dist = from.distanceTo(to);
+    const dir = to.clone().sub(from).normalize();
+
+    conn.bridgeMesh.position.copy(mid);
+    conn.bridgeMesh.scale.y = dist;
+
+    // Orient cylinder along the connection
+    const up = new THREE.Vector3(0, 1, 0);
+    const quat = new THREE.Quaternion().setFromUnitVectors(up, dir);
+    conn.bridgeMesh.quaternion.copy(quat);
+
+    // Break connections that are too far apart
+    if (dist > CONNECTION_SNAP_DISTANCE * 2.5) {
+      removeConnection(conn);
+      showToast('Disconnected');
+      return; // modified array, exit
+    }
+  }
+}
+
+// ===========================================================================
+// TENDRIL EFFECTS (approaching atoms)
+// ===========================================================================
+
+const tendrilLines = [];
+
+function updateTendrils() {
+  // Remove old tendrils
+  for (const line of tendrilLines) scene.remove(line);
+  tendrilLines.length = 0;
+
+  // For each pair of unconnected atoms, if close enough, show tendrils
+  for (let i = 0; i < atoms.length; i++) {
+    for (let j = i + 1; j < atoms.length; j++) {
+      const a = atoms[i];
+      const b = atoms[j];
+
+      // Skip if already connected
+      const connected = connections.some(c =>
+        (c.fromAtomId === a.id && c.toAtomId === b.id) ||
+        (c.fromAtomId === b.id && c.toAtomId === a.id)
+      );
+      if (connected) continue;
+
+      const dist = a.group.position.distanceTo(b.group.position);
+      if (dist < CONNECTION_SHOW_DISTANCE && dist > CONNECTION_SNAP_DISTANCE * 0.5) {
+        // Find closest unoccupied node pair
+        const aNodes = getNodePositions(a);
+        const bNodes = getNodePositions(b);
+
+        let bestDist = Infinity;
+        let bestFrom = null;
+        let bestTo = null;
+
+        for (let ni = 0; ni < aNodes.length; ni++) {
+          if (isNodeOccupied(a.id, ni)) continue;
+          for (let nj = 0; nj < bNodes.length; nj++) {
+            if (isNodeOccupied(b.id, nj)) continue;
+            const d = aNodes[ni].distanceTo(bNodes[nj]);
+            if (d < bestDist) {
+              bestDist = d;
+              bestFrom = aNodes[ni];
+              bestTo = bNodes[nj];
+            }
+          }
+        }
+
+        if (bestFrom && bestTo) {
+          const alpha = 1.0 - (bestDist / CONNECTION_SHOW_DISTANCE);
+          const points = [bestFrom, bestTo];
+          const geo = new THREE.BufferGeometry().setFromPoints(points);
+          const mat = new THREE.LineBasicMaterial({
+            color: TENDRIL_COLOR,
+            transparent: true,
+            opacity: alpha * 0.5,
+            linewidth: 1,
+          });
+          const line = new THREE.Line(geo, mat);
+          scene.add(line);
+          tendrilLines.push(line);
+        }
+      }
+    }
+  }
+}
+
+// ===========================================================================
+// PHYSICS (simple)
+// ===========================================================================
+
+function updatePhysics(dt) {
+  if (isFrozen) return;
+
+  for (const atom of atoms) {
+    // Skip if being dragged
+    if (isDraggingAtom && selectedAtom && selectedAtom.id === atom.id) continue;
+
+    // Apply gravity
+    atom.velocity.y += GRAVITY * dt;
+
+    // Damping
+    atom.velocity.multiplyScalar(DAMPING);
+
+    // Update position
+    atom.group.position.addScaledVector(atom.velocity, dt);
+
+    // Ground collision
+    const groundLevel = GROUND_Y + ATOM_RADIUS;
+    if (atom.group.position.y < groundLevel) {
+      atom.group.position.y = groundLevel;
+      atom.velocity.y = -atom.velocity.y * GROUND_RESTITUTION;
+      if (Math.abs(atom.velocity.y) < 0.1) atom.velocity.y = 0;
+      atom.grounded = true;
+    } else {
+      atom.grounded = false;
+    }
+
+    // Spring forces from connections
+    for (const conn of atom.connections) {
+      const otherId = conn.fromAtomId === atom.id ? conn.toAtomId : conn.fromAtomId;
+      const other = atoms.find(a => a.id === otherId);
+      if (!other) continue;
+
+      const diff = other.group.position.clone().sub(atom.group.position);
+      const dist = diff.length();
+      const restLength = (atom.type === 'flex' || other.type === 'flex')
+        ? FLEX_LENGTH * 0.7
+        : ATOM_RADIUS * 2.2;
+      const SPRING_K = 50;
+      const force = diff.normalize().multiplyScalar((dist - restLength) * SPRING_K * dt);
+      atom.velocity.add(force);
+    }
+  }
+}
+
+// ===========================================================================
+// ATOM ANIMATIONS (breathing, pulse kicks, etc.)
+// ===========================================================================
+
+function updateAtomAnimations(time) {
+  for (const atom of atoms) {
+    // Breathing: gentle scale oscillation
+    const breath = 1.0 + Math.sin(time * BREATH_SPEED + atom.breathPhase) * BREATH_AMPLITUDE;
+    if (!isDraggingAtom || !selectedAtom || selectedAtom.id !== atom.id) {
+      // Only apply breathing if not mid-snap animation
+      if (atom.group.scale.x > 0.99) {
+        atom.group.scale.setScalar(breath);
+      }
+    }
+
+    // HOLD nucleus glow
+    if (atom.type === 'hold' && atom.group.userData.nucleus) {
+      const nucleus = atom.group.userData.nucleus;
+      const isOn = atom.group.userData.isOn;
+      const targetIntensity = isOn ? 1.5 : 0.2;
+      const currentIntensity = nucleus.material.emissiveIntensity;
+      nucleus.material.emissiveIntensity += (targetIntensity - currentIntensity) * 0.1;
+      const targetScale = isOn ? 1.0 : 0.6;
+      const currentScale = nucleus.scale.x;
+      const newScale = currentScale + (targetScale - currentScale) * 0.1;
+      nucleus.scale.setScalar(newScale);
+    }
+
+    // SENSE cone shimmer
+    if (atom.type === 'sense' && atom.group.userData.cone) {
+      const cone = atom.group.userData.cone;
+      const CONE_SHIMMER_SPEED = 2;
+      const CONE_SHIMMER_MIN = 0.08;
+      const CONE_SHIMMER_MAX = 0.18;
+      cone.material.opacity = CONE_SHIMMER_MIN + (CONE_SHIMMER_MAX - CONE_SHIMMER_MIN) *
+        (Math.sin(time * CONE_SHIMMER_SPEED + atom.breathPhase) * 0.5 + 0.5);
+    }
+
+    // RELAY groove glow
+    if (atom.type === 'relay' && atom.group.userData.groove) {
+      const groove = atom.group.userData.groove;
+      const GROOVE_PULSE_SPEED = 3;
+      const GROOVE_MIN_INTENSITY = 0.3;
+      const GROOVE_MAX_INTENSITY = 0.8;
+      groove.material.emissiveIntensity = GROOVE_MIN_INTENSITY +
+        (GROOVE_MAX_INTENSITY - GROOVE_MIN_INTENSITY) *
+        (Math.sin(time * GROOVE_PULSE_SPEED) * 0.5 + 0.5);
+    }
+
+    // Connection node pulse
+    if (atom.group.userData.nodeMeshes) {
+      for (const nm of atom.group.userData.nodeMeshes) {
+        const NODE_PULSE_SPEED = 2.5;
+        const NODE_PULSE_MIN = 0.3;
+        const NODE_PULSE_MAX = 0.8;
+        nm.material.opacity = NODE_PULSE_MIN + (NODE_PULSE_MAX - NODE_PULSE_MIN) *
+          (Math.sin(time * NODE_PULSE_SPEED + atom.breathPhase) * 0.5 + 0.5);
+      }
+    }
+  }
+}
+
+// ===========================================================================
+// SCENE SETUP
+// ===========================================================================
+
+async function init() {
+  // Renderer
+  renderer = new THREE.WebGPURenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(BG_COLOR);
+  document.body.insertBefore(renderer.domElement, document.body.firstChild);
+
+  await renderer.init();
+
+  // Scene
+  scene = new THREE.Scene();
+  scene.fog = new THREE.Fog(BG_COLOR, FOG_NEAR, FOG_FAR);
+
+  // Camera
+  camera = new THREE.PerspectiveCamera(CAMERA_FOV, window.innerWidth / window.innerHeight, CAMERA_NEAR, CAMERA_FAR);
+  camera.position.set(...CAMERA_INITIAL_POS);
+
+  // Controls
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = ORBIT_DAMPING;
+  controls.target.set(0, 0, 0);
+
+  // Lighting
+  scene.add(new THREE.AmbientLight(0xffffff, AMBIENT_INTENSITY));
+
+  const dirLight = new THREE.DirectionalLight(0xffffff, DIRECTIONAL_INTENSITY);
+  dirLight.position.set(...DIRECTIONAL_POS);
+  scene.add(dirLight);
+
+  scene.add(new THREE.HemisphereLight(HEMISPHERE_SKY, HEMISPHERE_GROUND, HEMISPHERE_INTENSITY));
+
+  // Ground grid
+  const grid = new THREE.GridHelper(GROUND_SIZE, GROUND_DIVISIONS, GROUND_GRID_COLOR, GROUND_GRID_COLOR);
+  grid.position.y = GROUND_Y;
+  grid.material.opacity = 0.3;
+  grid.material.transparent = true;
+  scene.add(grid);
+
+  // Ground plane (for raycasting)
+  const groundGeo = new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE);
+  const groundMat = new THREE.MeshStandardMaterial({
+    color: 0x0d0d1a,
+    roughness: 0.9,
+    transparent: true,
+    opacity: 0.5,
+  });
+  const groundMesh = new THREE.Mesh(groundGeo, groundMat);
+  groundMesh.rotation.x = -Math.PI / 2;
+  groundMesh.position.y = GROUND_Y;
+  groundMesh.userData.isGround = true;
+  scene.add(groundMesh);
+
+  // Build UI
+  buildPalette();
+  setupEvents();
+
+  // Start with freeze badge
+  updateFreezeUI();
+
+  animate();
+}
+
+// ===========================================================================
+// PALETTE UI
+// ===========================================================================
+
+function buildPalette() {
+  const palette = document.getElementById('palette');
+
+  // Atom buttons
+  for (const [type, def] of Object.entries(ATOM_DEFS)) {
+    const btn = document.createElement('div');
+    btn.className = 'atom-btn';
+    btn.dataset.atomType = type;
+    btn.style.setProperty('--atom-color', `#${def.color.toString(16).padStart(6, '0')}`);
+    btn.style.setProperty('--atom-rgb', def.rgb);
+
+    const dot = document.createElement('div');
+    dot.className = `dot${type === 'flex' ? ' capsule' : ''}`;
+    dot.style.background = `#${def.color.toString(16).padStart(6, '0')}`;
+
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = def.name;
+
+    const hint = document.createElement('span');
+    hint.className = 'hint';
+    hint.textContent = def.hint;
+
+    btn.appendChild(dot);
+    btn.appendChild(label);
+    btn.appendChild(hint);
+
+    // Drag from palette
+    btn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      startPaletteDrag(type, e);
+    });
+
+    // Click to select tool
+    btn.addEventListener('click', (e) => {
+      if (isDraggingFromPalette) return;
+      selectAtomType(type);
+    });
+
+    palette.appendChild(btn);
+  }
+
+  // Separator
+  const sep = document.createElement('div');
+  sep.className = 'tool-sep';
+  palette.appendChild(sep);
+
+  // Select/Move tool
+  const selectBtn = document.createElement('div');
+  selectBtn.className = 'tool-btn';
+  selectBtn.id = 'select-tool-btn';
+  selectBtn.innerHTML = '<span class="icon">⊹</span><span>Select</span><span class="hint" style="margin-left:auto">[V]</span>';
+  selectBtn.addEventListener('click', () => toggleSelectTool());
+  palette.appendChild(selectBtn);
+
+  // Clear all
+  const clearBtn = document.createElement('div');
+  clearBtn.className = 'tool-btn';
+  clearBtn.innerHTML = '<span class="icon">✕</span><span>Clear All</span>';
+  clearBtn.addEventListener('click', () => {
+    for (const conn of [...connections]) removeConnection(conn);
+    for (const atom of [...atoms]) {
+      scene.remove(atom.group);
+    }
+    atoms.length = 0;
+    connections.length = 0;
+    nextAtomId = 0;
+    history.length = 0;
+    updateAtomCount();
+    showToast('Cleared');
+  });
+  palette.appendChild(clearBtn);
+}
+
+function selectAtomType(type) {
+  currentTool = null;
+  selectedAtomType = type;
+  updatePaletteUI();
+}
+
+function toggleSelectTool() {
+  if (currentTool === 'select') {
+    currentTool = null;
+  } else {
+    currentTool = 'select';
+    selectedAtomType = null;
+    clearGhost();
+  }
+  updatePaletteUI();
+}
+
+function updatePaletteUI() {
+  document.querySelectorAll('.atom-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.atomType === selectedAtomType && currentTool !== 'select');
+  });
+  const selectBtn = document.getElementById('select-tool-btn');
+  if (selectBtn) {
+    selectBtn.classList.toggle('active', currentTool === 'select');
+  }
+}
+
+function updateFreezeUI() {
+  const btn = document.getElementById('freeze-btn');
+  btn.classList.toggle('frozen', isFrozen);
+  document.getElementById('freeze-label').textContent = isFrozen ? 'Frozen' : 'Live';
+}
+
+// ===========================================================================
+// PALETTE DRAG
+// ===========================================================================
+
+function startPaletteDrag(type, e) {
+  isDraggingFromPalette = true;
+  dragAtomType = type;
+
+  const ghost = document.getElementById('drag-ghost');
+  const def = ATOM_DEFS[type];
+  ghost.style.background = `#${def.color.toString(16).padStart(6, '0')}`;
+  ghost.style.color = `#${def.color.toString(16).padStart(6, '0')}`;
+  ghost.className = type === 'flex' ? 'capsule' : '';
+  ghost.id = 'drag-ghost';
+  ghost.style.display = 'block';
+  ghost.style.left = e.clientX + 'px';
+  ghost.style.top = e.clientY + 'px';
+
+  // Create ghost in 3D scene
+  clearGhost();
+  ghostMesh = createAtomGroup(type, true);
+  ghostMesh.visible = false;
+  scene.add(ghostMesh);
+
+  const onMove = (ev) => {
+    ghost.style.left = ev.clientX + 'px';
+    ghost.style.top = ev.clientY + 'px';
+
+    // Update 3D ghost position
+    updateGhostFrom3DRay(ev);
+  };
+
+  const onUp = (ev) => {
+    ghost.style.display = 'none';
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+
+    // Place atom if over viewport
+    const rect = renderer.domElement.getBoundingClientRect();
+    if (ev.clientX > rect.left && ev.clientX < rect.right &&
+        ev.clientY > rect.top && ev.clientY < rect.bottom) {
+
+      if (ghostMesh && ghostMesh.visible) {
+        addAtom(dragAtomType, ghostMesh.position.clone());
+      }
+    }
+
+    clearGhost();
+    isDraggingFromPalette = false;
+    dragAtomType = null;
+  };
+
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function updateGhostFrom3DRay(ev) {
+  if (!ghostMesh) return;
+
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouseNDC.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+  mouseNDC.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+
+  raycaster.setFromCamera(mouseNDC, camera);
+
+  // Intersect with ground plane at Y=0
+  const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  const intersection = new THREE.Vector3();
+  if (raycaster.ray.intersectPlane(plane, intersection)) {
+    ghostMesh.position.copy(intersection);
+    ghostMesh.position.y = Math.max(ghostMesh.position.y, GROUND_Y + ATOM_RADIUS);
+    ghostMesh.visible = true;
+
+    // Snap to nearby atoms
+    snapGhostToNearby(ghostMesh);
+  }
+}
+
+function snapGhostToNearby(ghost) {
+  let bestDist = CONNECTION_SNAP_DISTANCE * 1.5;
+  let bestPos = null;
+
+  for (const atom of atoms) {
+    const dist = ghost.position.distanceTo(atom.group.position);
+    if (dist < bestDist) {
+      // Position adjacent to this atom
+      const dir = ghost.position.clone().sub(atom.group.position).normalize();
+      if (dir.lengthSq() < 0.001) dir.set(1, 0, 0);
+      const snapDist = atom.type === 'flex' || dragAtomType === 'flex'
+        ? FLEX_LENGTH * 0.5 + ATOM_RADIUS
+        : ATOM_RADIUS * 2.2;
+      bestPos = atom.group.position.clone().add(dir.multiplyScalar(snapDist));
+      bestDist = dist;
+    }
+  }
+
+  if (bestPos) {
+    ghost.position.lerp(bestPos, 0.3);
+  }
+}
+
+function clearGhost() {
+  if (ghostMesh) {
+    scene.remove(ghostMesh);
+    ghostMesh = null;
+  }
+}
+
+// ===========================================================================
+// INPUT EVENTS
+// ===========================================================================
+
+function setupEvents() {
+  renderer.domElement.addEventListener('mousemove', onMouseMove);
+  renderer.domElement.addEventListener('mousedown', onMouseDown);
+  renderer.domElement.addEventListener('mouseup', onMouseUp);
+  renderer.domElement.addEventListener('contextmenu', onRightClick);
+  renderer.domElement.addEventListener('dblclick', onDoubleClick);
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('resize', onResize);
+}
+
+function onMouseMove(e) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouseNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  mouseNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  mouseScreen.set(e.clientX, e.clientY);
+
+  raycaster.setFromCamera(mouseNDC, camera);
+
+  // Drag selected atom
+  if (isDraggingAtom && selectedAtom) {
+    const intersection = new THREE.Vector3();
+    if (raycaster.ray.intersectPlane(dragPlane, intersection)) {
+      selectedAtom.group.position.copy(intersection.add(dragOffset));
+      selectedAtom.group.position.y = Math.max(selectedAtom.group.position.y, GROUND_Y + ATOM_RADIUS);
+
+      // Check for new connections / break old ones
+      checkAndFormConnections(selectedAtom);
+    }
+    return;
+  }
+
+  // Hover highlight
+  hoveredAtom = findAtomUnderRay();
+}
+
+function onMouseDown(e) {
+  if (e.button !== 0) return;
+  if (isDraggingFromPalette) return;
+
+  if (currentTool === 'select') {
+    const atom = findAtomUnderRay();
+    if (atom) {
+      selectedAtom = atom;
+      isDraggingAtom = true;
+      controls.enabled = false;
+
+      // Set up drag plane facing camera
+      const camDir = camera.getWorldDirection(new THREE.Vector3());
+      dragPlane.setFromNormalAndCoplanarPoint(
+        camDir.negate(),
+        atom.group.position
+      );
+
+      const intersection = new THREE.Vector3();
+      raycaster.ray.intersectPlane(dragPlane, intersection);
+      dragOffset.copy(atom.group.position).sub(intersection);
+    }
+  } else if (selectedAtomType) {
+    // Place atom via click
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const intersection = new THREE.Vector3();
+    if (raycaster.ray.intersectPlane(plane, intersection)) {
+      intersection.y = Math.max(intersection.y, GROUND_Y + ATOM_RADIUS);
+      addAtom(selectedAtomType, intersection);
+    }
+  }
+}
+
+function onMouseUp(e) {
+  if (isDraggingAtom && selectedAtom) {
+    // Final connection check
+    checkAndFormConnections(selectedAtom);
+    isDraggingAtom = false;
+    controls.enabled = true;
+  }
+}
+
+function onRightClick(e) {
+  e.preventDefault();
+  raycaster.setFromCamera(mouseNDC, camera);
+  const atom = findAtomUnderRay();
+  if (atom) {
+    removeAtom(atom.id);
+    showToast(`Removed ${ATOM_DEFS[atom.type].name}`);
+  }
+}
+
+function onDoubleClick(e) {
+  raycaster.setFromCamera(mouseNDC, camera);
+  const atom = findAtomUnderRay();
+  if (atom) {
+    // Toggle HOLD state
+    if (atom.type === 'hold') {
+      atom.group.userData.isOn = !atom.group.userData.isOn;
+      showToast(`HOLD: ${atom.group.userData.isOn ? 'ON' : 'OFF'}`);
+    }
+    // Toggle RELAY mode
+    if (atom.type === 'relay') {
+      const modes = ['pass', 'block', 'invert'];
+      const current = atom.group.userData.relayMode || 'pass';
+      const nextIdx = (modes.indexOf(current) + 1) % modes.length;
+      atom.group.userData.relayMode = modes[nextIdx];
+      showToast(`RELAY: ${modes[nextIdx].toUpperCase()}`);
+    }
+  }
+}
+
+function onKeyDown(e) {
+  // Space: toggle freeze
+  if (e.code === 'Space') {
+    e.preventDefault();
+    isFrozen = !isFrozen;
+    updateFreezeUI();
+    showToast(isFrozen ? 'Time frozen' : 'Time running');
+  }
+
+  // V: select tool
+  if (e.key === 'v' || e.key === 'V') {
+    toggleSelectTool();
+  }
+
+  // Escape: deselect
+  if (e.key === 'Escape') {
+    currentTool = null;
+    selectedAtomType = null;
+    selectedAtom = null;
+    clearGhost();
+    updatePaletteUI();
+  }
+
+  // 1-5: quick select atoms
+  const quickSelect = { '1': 'pulse', '2': 'sense', '3': 'relay', '4': 'hold', '5': 'flex' };
+  if (quickSelect[e.key]) {
+    selectAtomType(quickSelect[e.key]);
+  }
+
+  // Delete/Backspace: remove hovered
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (hoveredAtom) {
+      removeAtom(hoveredAtom.id);
+      showToast(`Removed ${ATOM_DEFS[hoveredAtom.type].name}`);
+      hoveredAtom = null;
+    }
+  }
+
+  // Ctrl+Z: undo
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+    e.preventDefault();
+    undo();
+  }
+}
+
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// ===========================================================================
+// RAYCASTING
+// ===========================================================================
+
+function findAtomUnderRay() {
+  let best = null;
+  let bestDist = RAYCAST_THRESHOLD;
+
+  for (const atom of atoms) {
+    const dist = raycaster.ray.distanceToPoint(atom.group.position);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = atom;
+    }
+  }
+  return best;
+}
+
+// ===========================================================================
+// UNDO
+// ===========================================================================
+
+function undo() {
+  if (history.length === 0) return;
+  const last = history.pop();
+  if (last.action === 'add') {
+    // Remove the atom
+    const atom = atoms.find(a => a.id === last.atomId);
+    if (atom) {
+      const connsToRemove = connections.filter(c => c.fromAtomId === atom.id || c.toAtomId === atom.id);
+      for (const conn of connsToRemove) removeConnection(conn);
+      scene.remove(atom.group);
+      const idx = atoms.indexOf(atom);
+      if (idx >= 0) atoms.splice(idx, 1);
+      updateAtomCount();
+    }
+  }
+}
+
+// ===========================================================================
+// RENDER LOOP
+// ===========================================================================
+
+let lastTime = performance.now();
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const now = performance.now();
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+  const time = now / 1000;
+
+  controls.update();
+
+  // Physics
+  updatePhysics(dt);
+
+  // Connection bridges
+  updateConnectionBridges();
+
+  // Tendril effects
+  updateTendrils();
+
+  // Atom animations
+  updateAtomAnimations(time);
+
+  // Cursor style
+  if (currentTool === 'select') {
+    renderer.domElement.style.cursor = hoveredAtom ? 'grab' : 'crosshair';
+    if (isDraggingAtom) renderer.domElement.style.cursor = 'grabbing';
+  } else if (selectedAtomType) {
+    renderer.domElement.style.cursor = 'copy';
+  } else {
+    renderer.domElement.style.cursor = 'default';
+  }
+
+  renderer.renderAsync(scene, camera);
+}
+
+// ===========================================================================
+// BOOT
+// ===========================================================================
+
+init().catch(err => {
+  console.error('Init failed:', err);
+  document.body.innerHTML = `<div style="color:#e8603c;padding:40px;font-size:16px;font-family:system-ui">
+    WebGPU initialization failed. Use a WebGPU-capable browser (Chrome 113+, Edge 113+).<br>
+    <span style="color:#666;font-size:13px">${err.message}</span>
+  </div>`;
+});
+
+</script>
+</body>
+</html>
