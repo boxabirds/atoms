@@ -483,6 +483,7 @@ const raycaster = new THREE.Raycaster();
 const mouseNDC = new THREE.Vector2();
 
 const atoms = [];
+const atomMap = new Map();  // id -> atom, O(1) lookup
 const connections = [];
 const signals = [];
 let nextAtomId = 0;
@@ -703,6 +704,7 @@ function addAtom(type, position) {
   };
 
   atoms.push(atom);
+  atomMap.set(id, atom);
   undoHistory.push({ action: 'add', atomId: id });
   updateAtomCount();
   animateSnap(group);
@@ -717,6 +719,7 @@ function removeAtom(id) {
   for (const c of connections.filter(c => c.fromAtomId === id || c.toAtomId === id)) removeConnection(c);
   scene.remove(atom.group);
   atoms.splice(idx, 1);
+  atomMap.delete(id);
   updateAtomCount();
   if (selectedAtom && selectedAtom.id === id) selectedAtom = null;
 }
@@ -780,8 +783,8 @@ function formConnection(fromId, toId, fromIdx, toIdx) {
   const conn = { fromAtomId: fromId, toAtomId: toId, fromNodeIdx: fromIdx, toNodeIdx: toIdx, bridgeMesh: bridge };
   connections.push(conn);
 
-  const fa = atoms.find(a => a.id === fromId);
-  const ta = atoms.find(a => a.id === toId);
+  const fa = atomMap.get(fromId);
+  const ta = atomMap.get(toId);
   if (fa) fa.connections.push(conn);
   if (ta) ta.connections.push(conn);
 }
@@ -799,8 +802,8 @@ function removeConnection(conn) {
 function updateConnectionBridges() {
   for (let i = connections.length - 1; i >= 0; i--) {
     const conn = connections[i];
-    const fa = atoms.find(a => a.id === conn.fromAtomId);
-    const ta = atoms.find(a => a.id === conn.toAtomId);
+    const fa = atomMap.get(conn.fromAtomId);
+    const ta = atomMap.get(conn.toAtomId);
     if (!fa || !ta) { removeConnection(conn); continue; }
 
     const fNodes = getNodePositions(fa);
@@ -926,7 +929,7 @@ function firePulse(atom, time) {
   // Plus: if near ground, add upward component for "kicking off ground" locomotion
   for (const conn of atom.connections) {
     const otherId = conn.fromAtomId === atom.id ? conn.toAtomId : conn.fromAtomId;
-    const other = atoms.find(a => a.id === otherId);
+    const other = atomMap.get(otherId);
     if (!other) continue;
 
     // Primary force: nozzle direction
@@ -969,7 +972,7 @@ function emitSignal(fromId, toId, conn) {
 }
 
 function deliverSignal(sig, time) {
-  const target = atoms.find(a => a.id === sig.toAtomId);
+  const target = atomMap.get(sig.toAtomId);
   if (!target) return;
   target.signalCharge = 1.0;
 
@@ -1010,8 +1013,8 @@ function deliverSignal(sig, time) {
 function updateSignalVisuals() {
   for (const sig of signals) {
     if (!sig.visual) continue;
-    const fa = atoms.find(a => a.id === sig.fromAtomId);
-    const ta = atoms.find(a => a.id === sig.toAtomId);
+    const fa = atomMap.get(sig.fromAtomId);
+    const ta = atomMap.get(sig.toAtomId);
     if (!fa || !ta) continue;
     sig.visual.position.lerpVectors(fa.group.position, ta.group.position, sig.progress);
   }
@@ -1079,7 +1082,7 @@ function findMolecules() {
     while (queue.length > 0) {
       const id = queue.shift();
       component.push(id);
-      const a = atoms.find(x => x.id === id);
+      const a = atomMap.get(id);
       if (!a) continue;
       for (const conn of a.connections) {
         const neighbor = conn.fromAtomId === id ? conn.toAtomId : conn.fromAtomId;
@@ -1124,7 +1127,7 @@ function updateSkins() {
     const positions = [];
     const center = new THREE.Vector3();
     for (const id of mol) {
-      const a = atoms.find(x => x.id === id);
+      const a = atomMap.get(id);
       if (a) center.add(a.group.position);
     }
     center.divideScalar(mol.length);
@@ -1142,7 +1145,7 @@ function updateSkins() {
     }
 
     for (const id of mol) {
-      const a = atoms.find(x => x.id === id);
+      const a = atomMap.get(id);
       if (!a) continue;
       const atomPos = a.group.position;
       // Effective radius: visual radius + padding
@@ -1171,16 +1174,17 @@ function updateSkins() {
     try {
       const geo = new ConvexGeometry(positions);
 
+      // Always create a fresh mesh — WebGPU renderer caches pipeline/buffer bindings
+      // per mesh object, so swapping geometry on an existing mesh causes stale vertex
+      // buffer references. Reuse the material when possible.
+      let mat;
       if (existing) {
-        // Update existing mesh geometry
+        scene.remove(existing.mesh);
         existing.mesh.geometry.dispose();
-        existing.mesh.geometry = geo;
-        existing.atomIds = mol;
-        newSkinMeshes.push(existing);
+        mat = existing.mesh.material;
       } else {
-        // Create new skin mesh — tinted by dominant atom type
         const skinCol = getSkinColor(mol);
-        const mat = new THREE.MeshStandardMaterial({
+        mat = new THREE.MeshStandardMaterial({
           color: skinCol.color,
           emissive: skinCol.emissive,
           emissiveIntensity: SKIN_EMISSIVE_INTENSITY,
@@ -1191,11 +1195,11 @@ function updateSkins() {
           metalness: 0.05,
           depthWrite: false,
         });
-        const mesh = new THREE.Mesh(geo, mat);
-        mesh.renderOrder = 1; // render after opaque atoms
-        scene.add(mesh);
-        newSkinMeshes.push({ mesh, atomIds: mol });
       }
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.renderOrder = 1;
+      scene.add(mesh);
+      newSkinMeshes.push({ mesh, atomIds: mol });
     } catch (e) {
       // ConvexGeometry can fail with coplanar points — skip silently
       if (existing) newSkinMeshes.push(existing);
@@ -1205,9 +1209,9 @@ function updateSkins() {
   // Remove orphaned skins
   for (let i = 0; i < skinMeshes.length; i++) {
     if (!usedOldIndices.has(i)) {
+      scene.remove(skinMeshes[i].mesh);
       skinMeshes[i].mesh.geometry.dispose();
       skinMeshes[i].mesh.material.dispose();
-      scene.remove(skinMeshes[i].mesh);
     }
   }
 
@@ -1225,7 +1229,7 @@ function updateSkinOpacity() {
 function getSkinColor(mol) {
   const counts = {};
   for (const id of mol) {
-    const a = atoms.find(x => x.id === id);
+    const a = atomMap.get(id);
     if (a) counts[a.type] = (counts[a.type] || 0) + 1;
   }
   let dominant = 'flex';
@@ -1327,7 +1331,7 @@ function updatePhysics(dt) {
     // Spring constraints from connections
     for (const conn of atom.connections) {
       const otherId = conn.fromAtomId === atom.id ? conn.toAtomId : conn.fromAtomId;
-      const other = atoms.find(a => a.id === otherId);
+      const other = atomMap.get(otherId);
       if (!other) continue;
       const diff = other.group.position.clone().sub(atom.group.position);
       const dist = diff.length();
@@ -1498,7 +1502,7 @@ function buildPalette() {
     signals.length = 0;
     for (const c of [...connections]) removeConnection(c);
     for (const a of [...atoms]) scene.remove(a.group);
-    atoms.length = 0; connections.length = 0; nextAtomId = 0; undoHistory.length = 0;
+    atoms.length = 0; atomMap.clear(); connections.length = 0; nextAtomId = 0; undoHistory.length = 0;
     for (const s of skinMeshes) { s.mesh.geometry.dispose(); s.mesh.material.dispose(); scene.remove(s.mesh); }
     skinMeshes.length = 0;
     updateAtomCount(); showToast('Cleared');
@@ -1830,10 +1834,10 @@ function undo() {
   if (!undoHistory.length) return;
   const last = undoHistory.pop();
   if (last.action === 'add') {
-    const a = atoms.find(x => x.id === last.atomId);
+    const a = atomMap.get(last.atomId);
     if (a) {
       for (const c of connections.filter(c => c.fromAtomId === a.id || c.toAtomId === a.id)) removeConnection(c);
-      scene.remove(a.group); atoms.splice(atoms.indexOf(a), 1); updateAtomCount();
+      scene.remove(a.group); atoms.splice(atoms.indexOf(a), 1); atomMap.delete(a.id); updateAtomCount();
     }
   }
 }
@@ -1843,9 +1847,10 @@ function undo() {
 // ===========================================================================
 
 let lastTime = performance.now();
+let lastSkinUpdate = 0;
+const SKIN_UPDATE_INTERVAL_MS = 50;  // rebuild hulls at ~20fps, not 60
 
-function animate() {
-  requestAnimationFrame(animate);
+async function animate() {
   const now = performance.now();
   const dt = Math.min((now - lastTime) / 1000, 0.05);
   lastTime = now;
@@ -1858,14 +1863,18 @@ function animate() {
   updateConnectionBridges();
   updateTendrils();
   updateAtomAnimations(time);
-  if (skinOpacity > 0) updateSkins();
+  if (skinOpacity > 0 && (now - lastSkinUpdate) > SKIN_UPDATE_INTERVAL_MS) {
+    updateSkins();
+    lastSkinUpdate = now;
+  }
 
   if (currentTool === 'select')
     renderer.domElement.style.cursor = isDraggingAtom ? 'grabbing' : (hoveredAtom ? 'grab' : 'crosshair');
   else if (selectedAtomType) renderer.domElement.style.cursor = 'copy';
   else renderer.domElement.style.cursor = 'default';
 
-  renderer.renderAsync(scene, camera);
+  await renderer.renderAsync(scene, camera);
+  requestAnimationFrame(animate);
 }
 
 // ===========================================================================

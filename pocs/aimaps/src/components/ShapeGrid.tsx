@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { HistoryEntry, MapKey } from '../lib/types';
@@ -42,17 +43,22 @@ const GRID_POSITIONS: [number, number, number][] = [
 /** Neutral base color when no albedo map is applied */
 const NEUTRAL_COLOR = 0x6699cc;
 
+/** Base light intensities (scaled by the brightness slider) */
+const BASE_AMBIENT_INTENSITY = 2.0;
+const BASE_KEY_INTENSITY = 4.0;
+const BASE_FILL_INTENSITY = 1.5;
+const BASE_ENV_INTENSITY = 2.0;
+
 // ---------------------------------------------------------------------------
 // Scene setup
 // ---------------------------------------------------------------------------
 
 interface SceneState {
-  renderer: THREE.WebGLRenderer;
+  renderer: WebGPURenderer;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   controls: OrbitControls;
   meshes: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial>[];
-  frameId: number;
   /** Cache loaded textures to avoid reloading unchanged maps */
   textureCache: Map<string, THREE.Texture>;
   /** Pristine vertex positions before any displacement */
@@ -63,6 +69,10 @@ interface SceneState {
   seamGroups: number[][][];
   /** Cache decoded displacement pixel data by data-URL */
   displacementCache: Map<string, DisplacementData>;
+  /** Light references for dynamic brightness control */
+  ambientLight: THREE.AmbientLight;
+  keyLight: THREE.DirectionalLight;
+  fillLight: THREE.DirectionalLight;
 }
 
 function createGeometries(): THREE.BufferGeometry[] {
@@ -74,8 +84,9 @@ function createGeometries(): THREE.BufferGeometry[] {
   ];
 }
 
-function initScene(canvas: HTMLCanvasElement): SceneState {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+async function initScene(canvas: HTMLCanvasElement): Promise<SceneState> {
+  const renderer = new WebGPURenderer({ canvas, antialias: true, alpha: false });
+  await renderer.init();
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.2;
@@ -88,6 +99,7 @@ function initScene(canvas: HTMLCanvasElement): SceneState {
   // scene.background stays dark for aesthetics; scene.environment drives shading.
   const pmrem = new THREE.PMREMGenerator(renderer);
   scene.environment = pmrem.fromScene(new RoomEnvironment()).texture;
+  scene.environmentIntensity = 2.0;
   pmrem.dispose();
 
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
@@ -98,12 +110,14 @@ function initScene(canvas: HTMLCanvasElement): SceneState {
   controls.dampingFactor = 0.05;
   controls.target.set(0, 0, 0);
 
-  // Lighting
-  scene.add(new THREE.AmbientLight(0xffffff, 0.5));
-  const keyLight = new THREE.DirectionalLight(0xffffff, 1.0);
+  // Lighting — WebGPU's physically correct model needs higher intensities
+  // than the old WebGL pipeline to match perceived brightness.
+  const ambientLight = new THREE.AmbientLight(0xffffff, BASE_AMBIENT_INTENSITY);
+  scene.add(ambientLight);
+  const keyLight = new THREE.DirectionalLight(0xffffff, BASE_KEY_INTENSITY);
   keyLight.position.set(5, 8, 5);
   scene.add(keyLight);
-  const fillLight = new THREE.DirectionalLight(0x4466cc, 0.3);
+  const fillLight = new THREE.DirectionalLight(0x4466cc, BASE_FILL_INTENSITY);
   fillLight.position.set(-3, 2, -3);
   scene.add(fillLight);
 
@@ -138,12 +152,15 @@ function initScene(canvas: HTMLCanvasElement): SceneState {
   const seamGroups = originalPositions.map((pos) => buildSeamGroups(pos));
 
   return {
-    renderer, scene, camera, controls, meshes, frameId: 0,
+    renderer, scene, camera, controls, meshes,
     textureCache: new Map(),
     originalPositions,
     originalNormals,
     seamGroups,
     displacementCache: new Map(),
+    ambientLight,
+    keyLight,
+    fillLight,
   };
 }
 
@@ -315,46 +332,68 @@ interface ShapeGridProps {
   entry: HistoryEntry | null;
 }
 
+/** Default brightness multiplier */
+const DEFAULT_BRIGHTNESS = 1.0;
+
 export function ShapeGrid({ entry }: ShapeGridProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef<SceneState | null>(null);
+  const [brightness, setBrightness] = useState(DEFAULT_BRIGHTNESS);
+
+  const handleBrightness = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = parseFloat(e.target.value);
+    setBrightness(v);
+    const s = stateRef.current;
+    if (!s) return;
+    s.ambientLight.intensity = BASE_AMBIENT_INTENSITY * v;
+    s.keyLight.intensity = BASE_KEY_INTENSITY * v;
+    s.fillLight.intensity = BASE_FILL_INTENSITY * v;
+    s.scene.environmentIntensity = BASE_ENV_INTENSITY * v;
+  }, []);
 
   // Initialise Three.js scene once
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const state = initScene(canvas);
-    stateRef.current = state;
+    let disposed = false;
+    let state: SceneState | null = null;
 
-    function resize() {
-      const parent = canvas!.parentElement!;
-      const w = parent.clientWidth;
-      const h = parent.clientHeight;
-      state.renderer.setSize(w, h);
-      state.camera.aspect = w / h;
-      state.camera.updateProjectionMatrix();
-    }
+    initScene(canvas).then((s) => {
+      if (disposed) { s.renderer.dispose(); return; }
+      state = s;
+      stateRef.current = s;
 
-    resize();
-    window.addEventListener('resize', resize);
+      function resize() {
+        const parent = canvas!.parentElement!;
+        const w = parent.clientWidth;
+        const h = parent.clientHeight;
+        s.renderer.setSize(w, h);
+        s.camera.aspect = w / h;
+        s.camera.updateProjectionMatrix();
+      }
 
-    function animate() {
-      state.frameId = requestAnimationFrame(animate);
-      state.controls.update();
-      const t = performance.now() * ROTATION_SPEED;
-      state.meshes.forEach((mesh, i) => {
-        mesh.rotation.y = t + i * Math.PI * 0.5;
+      resize();
+      window.addEventListener('resize', resize);
+
+      // WebGPU render() is async — use setAnimationLoop instead of rAF
+      s.renderer.setAnimationLoop(() => {
+        s.controls.update();
+        const t = performance.now() * ROTATION_SPEED;
+        s.meshes.forEach((mesh, i) => {
+          mesh.rotation.y = t + i * Math.PI * 0.5;
+        });
+        s.renderer.render(s.scene, s.camera);
       });
-      state.renderer.render(state.scene, state.camera);
-    }
-    animate();
+    });
 
     return () => {
-      window.removeEventListener('resize', resize);
-      cancelAnimationFrame(state.frameId);
-      state.controls.dispose();
-      state.renderer.dispose();
+      disposed = true;
+      if (state) {
+        state.renderer.setAnimationLoop(null);
+        state.controls.dispose();
+        state.renderer.dispose();
+      }
     };
   }, []);
 
@@ -375,6 +414,20 @@ export function ShapeGrid({ entry }: ShapeGridProps) {
   return (
     <div className="shape-grid">
       <canvas ref={canvasRef} />
+      <div className="viewport-toolbar">
+        <label className="toolbar-slider">
+          <span className="toolbar-icon" title="Brightness">&#9728;</span>
+          <input
+            type="range"
+            min="0"
+            max="4"
+            step="0.05"
+            value={brightness}
+            onChange={handleBrightness}
+          />
+          <span className="toolbar-value">{brightness.toFixed(1)}x</span>
+        </label>
+      </div>
       <div className="shape-labels">
         {SHAPE_NAMES.map((name) => (
           <div key={name} className="shape-label">{name}</div>
