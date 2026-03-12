@@ -1,8 +1,9 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useMemo } from 'react';
 import { ShapeGrid } from './components/ShapeGrid';
 import { HistoryPanel } from './components/HistoryPanel';
+import { MaterialTuner } from './components/MaterialTuner';
 import { computeNormalMap } from './lib/normal-from-height';
-import type { HistoryEntry, MaterialRecipe, MapType, MapKey } from './lib/types';
+import type { HistoryEntry, MaterialRecipe, MaterialScalars, MapType, MapKey } from './lib/types';
 import { DEFAULT_SCALARS } from './lib/types';
 
 // Re-export for components that import from App
@@ -121,13 +122,40 @@ export function App() {
   const [loading, setLoading] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState('');
 
+  // Per-entry scalar overrides from the tuner (keyed by entry id)
+  const [scalarOverrides, setScalarOverrides] = useState<Record<string, MaterialScalars>>({});
+
   // Track the "live" entry being built during generation for progressive reveal
   const liveEntryRef = useRef<HistoryEntry | null>(null);
   const [liveEntry, setLiveEntry] = useState<HistoryEntry | null>(null);
 
-  const activeMap = liveEntry?.id === activeMapId
+  const activeBase = liveEntry?.id === activeMapId
     ? liveEntry
     : history.find((h) => h.id === activeMapId) ?? null;
+
+  // Merge scalar overrides into the active entry for the 3D view
+  const activeMap = useMemo<HistoryEntry | null>(() => {
+    if (!activeBase) return null;
+    const overrides = scalarOverrides[activeBase.id];
+    if (!overrides) return activeBase;
+    return {
+      ...activeBase,
+      recipe: { ...activeBase.recipe, scalars: overrides },
+    };
+  }, [activeBase, scalarOverrides]);
+
+  // Current scalars for the tuner UI (overrides if set, else recipe, else defaults)
+  const activeScalars = activeBase
+    ? scalarOverrides[activeBase.id] ?? activeBase.recipe.scalars
+    : DEFAULT_SCALARS;
+
+  const handleScalarChange = useCallback(
+    (updated: MaterialScalars) => {
+      if (!activeMapId) return;
+      setScalarOverrides((prev) => ({ ...prev, [activeMapId]: updated }));
+    },
+    [activeMapId],
+  );
 
   const handleGenerate = useCallback(async (prompt: string) => {
     setLoading(true);
@@ -204,14 +232,21 @@ export function App() {
   return (
     <div className="app">
       <ShapeGrid entry={activeMap} />
-      <HistoryPanel
-        history={history}
-        activeMapId={activeMapId}
-        loading={loading}
-        loadingStatus={loadingStatus}
-        onGenerate={handleGenerate}
-        onSelect={setActiveMapId}
-      />
+      <div className="right-panel">
+        <MaterialTuner
+          scalars={activeScalars}
+          onChange={handleScalarChange}
+          disabled={!activeBase || loading}
+        />
+        <HistoryPanel
+          history={history}
+          activeMapId={activeMapId}
+          loading={loading}
+          loadingStatus={loadingStatus}
+          onGenerate={handleGenerate}
+          onSelect={setActiveMapId}
+        />
+      </div>
     </div>
   );
 }

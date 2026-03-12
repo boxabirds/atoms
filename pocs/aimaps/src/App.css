@@ -26,6 +26,13 @@ body,
   height: 100vh;
 }
 
+.right-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
 /* ── 3D Viewport ── */
 .shape-grid {
   position: relative;
@@ -103,13 +110,94 @@ body,
   user-select: none;
 }
 
+/* ── Material Tuner ── */
+.material-tuner {
+  flex-shrink: 0;
+  background: #111122;
+  border-left: 1px solid #2a2a4a;
+  border-bottom: 1px solid #2a2a4a;
+}
+
+.tuner-body {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 45vh;
+  overflow-y: auto;
+}
+
+.tuner-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: default;
+}
+
+.tuner-label {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  width: 80px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tuner-row input[type="range"] {
+  flex: 1;
+  accent-color: #6666cc;
+  cursor: pointer;
+  height: 4px;
+}
+
+.tuner-value {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  min-width: 36px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tuner-color {
+  width: 28px;
+  height: 22px;
+  border: 1px solid #444;
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.tuner-color::-webkit-color-swatch-wrapper {
+  padding: 1px;
+}
+
+.tuner-color::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
+.tuner-body::-webkit-scrollbar {
+  width: 4px;
+}
+
+.tuner-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tuner-body::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 2px;
+}
+
 /* ── History Panel ── */
 .history-panel {
   display: flex;
   flex-direction: column;
   background: #111122;
   border-left: 1px solid #2a2a4a;
-  height: 100vh;
+  flex: 1;
+  min-height: 0;
 }
 
 .panel-header {
