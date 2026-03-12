@@ -127,7 +127,24 @@ function initScene(canvas: HTMLCanvasElement): SceneState {
     return mesh;
   });
 
-  return { renderer, scene, camera, controls, meshes, frameId: 0, textureCache: new Map() };
+  // Snapshot pristine geometry for CPU displacement (must happen before any
+  // displacement is applied so we always displace from the original surface)
+  const originalPositions = meshes.map((m) =>
+    new Float32Array(m.geometry.getAttribute('position').array as Float32Array),
+  );
+  const originalNormals = meshes.map((m) =>
+    new Float32Array(m.geometry.getAttribute('normal').array as Float32Array),
+  );
+  const seamGroups = originalPositions.map((pos) => buildSeamGroups(pos));
+
+  return {
+    renderer, scene, camera, controls, meshes, frameId: 0,
+    textureCache: new Map(),
+    originalPositions,
+    originalNormals,
+    seamGroups,
+    displacementCache: new Map(),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -174,32 +191,84 @@ function resetMaterial(mat: THREE.MeshPhysicalMaterial) {
   mat.needsUpdate = true;
 }
 
+/** Restore geometry to its undisplaced state */
+function resetGeometry(state: SceneState) {
+  state.meshes.forEach((mesh, i) => {
+    const geom = mesh.geometry;
+
+    const posAttr = geom.getAttribute('position');
+    (posAttr.array as Float32Array).set(state.originalPositions[i]);
+    posAttr.needsUpdate = true;
+
+    const normAttr = geom.getAttribute('normal');
+    (normAttr.array as Float32Array).set(state.originalNormals[i]);
+    normAttr.needsUpdate = true;
+
+    geom.computeBoundingSphere();
+    geom.computeBoundingBox();
+  });
+}
+
+/** Apply CPU-side displacement to all meshes, averaging at seam vertices */
+function applyDisplacementSync(state: SceneState, data: DisplacementData, scale: number) {
+  state.meshes.forEach((mesh, i) => {
+    const geom = mesh.geometry;
+    const positions = geom.getAttribute('position').array as Float32Array;
+    const uvs = geom.getAttribute('uv').array as Float32Array;
+
+    displace(
+      positions,
+      state.originalPositions[i],
+      state.originalNormals[i],
+      uvs,
+      state.seamGroups[i],
+      data,
+      scale,
+    );
+    geom.getAttribute('position').needsUpdate = true;
+
+    // Recompute vertex normals for the displaced surface, then smooth seams
+    geom.computeVertexNormals();
+    const normals = geom.getAttribute('normal').array as Float32Array;
+    averageSeamNormals(normals, state.seamGroups[i]);
+    geom.getAttribute('normal').needsUpdate = true;
+
+    geom.computeBoundingSphere();
+    geom.computeBoundingBox();
+  });
+}
+
+/** Monotonic counter to discard stale async displacement results */
+let applyVersion = 0;
+
 /** Apply a full HistoryEntry (recipe scalars + whatever maps are available) */
-function applyEntry(state: SceneState, entry: HistoryEntry) {
+async function applyEntry(state: SceneState, entry: HistoryEntry) {
+  const version = ++applyVersion;
   const { maps, recipe } = entry;
   const s = recipe.scalars;
+
+  // Always reset geometry before applying a new entry
+  resetGeometry(state);
 
   state.meshes.forEach((mesh) => {
     const mat = mesh.material;
     resetMaterial(mat);
 
-    // --- Scalars ---
+    // --- Scalars (GPU displacement is never used) ---
     mat.roughness = s.roughness;
     mat.metalness = s.metalness;
     mat.transmission = s.transmission;
     mat.thickness = s.thickness;
     mat.ior = s.ior;
     mat.transparent = s.transmission > 0;
-    mat.displacementScale = maps.displacement ? s.displacementScale : 0;
 
     if (s.emissiveIntensity > 0) {
       mat.emissiveIntensity = s.emissiveIntensity;
       if (s.emissiveColor) mat.emissive.setStyle(s.emissiveColor);
     }
 
-    // --- Texture maps ---
+    // --- Texture maps (displacement handled via CPU, not GPU) ---
     const mapSlots: [MapKey, keyof THREE.MeshPhysicalMaterial, THREE.ColorSpace][] = [
-      ['displacement', 'displacementMap', THREE.LinearSRGBColorSpace],
       ['normal', 'normalMap', THREE.LinearSRGBColorSpace],
       ['albedo', 'map', THREE.SRGBColorSpace],
       ['roughness', 'roughnessMap', THREE.LinearSRGBColorSpace],
@@ -224,6 +293,18 @@ function applyEntry(state: SceneState, entry: HistoryEntry) {
 
     mat.needsUpdate = true;
   });
+
+  // --- CPU displacement (async image decode, then synchronous vertex update) ---
+  if (maps.displacement) {
+    let data = state.displacementCache.get(maps.displacement);
+    if (!data) {
+      data = await loadDisplacementData(maps.displacement);
+      state.displacementCache.set(maps.displacement, data);
+    }
+    // Bail if a newer entry arrived while we were loading
+    if (version !== applyVersion) return;
+    applyDisplacementSync(state, data, s.displacementScale);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -277,13 +358,14 @@ export function ShapeGrid({ entry }: ShapeGridProps) {
     };
   }, []);
 
-  // Apply/reset material when entry changes
+  // Apply/reset material + geometry when entry changes
   useEffect(() => {
     const state = stateRef.current;
     if (!state) return;
 
     if (!entry) {
       state.meshes.forEach((mesh) => resetMaterial(mesh.material));
+      resetGeometry(state);
       return;
     }
 

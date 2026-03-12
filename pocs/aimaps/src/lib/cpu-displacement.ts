@@ -125,8 +125,14 @@ export function buildSeamGroups(positions: Float32Array): number[][] {
 // ---------------------------------------------------------------------------
 
 /**
- * Displace geometry vertices along their original normals, averaging
- * displacement at seam vertices to prevent polygon tearing.
+ * Displace geometry vertices along their original normals, then average
+ * the **final positions** at seam vertices to prevent polygon tearing.
+ *
+ * Averaging positions (not the displacement scalar) is essential because
+ * seam vertices can have divergent normals (e.g. box edges where face
+ * normals are 90° apart). Same scalar × different normal = different
+ * destination = tear. Averaging the destination fixes it regardless of
+ * normal direction or displacement value differences.
  *
  * Mutates `positions` in place. Uses `originalPositions` as the base.
  */
@@ -141,27 +147,35 @@ export function displace(
 ): void {
   const vertexCount = positions.length / 3;
 
-  // 1. Sample per-vertex displacement
-  const disp = new Float32Array(vertexCount);
+  // 1. Displace every vertex independently along its own normal
   for (let i = 0; i < vertexCount; i++) {
-    disp[i] = sampleDisplacement(data, uvs[i * 2], uvs[i * 2 + 1]);
-  }
-
-  // 2. Average displacement at seam vertices
-  for (const group of seamGroups) {
-    let sum = 0;
-    for (const idx of group) sum += disp[idx];
-    const avg = sum / group.length;
-    for (const idx of group) disp[idx] = avg;
-  }
-
-  // 3. Displace along original normals
-  for (let i = 0; i < vertexCount; i++) {
-    const d = disp[i] * scale;
+    const d = sampleDisplacement(data, uvs[i * 2], uvs[i * 2 + 1]) * scale;
     const i3 = i * 3;
     positions[i3] = originalPositions[i3] + normals[i3] * d;
     positions[i3 + 1] = originalPositions[i3 + 1] + normals[i3 + 1] * d;
     positions[i3 + 2] = originalPositions[i3 + 2] + normals[i3 + 2] * d;
+  }
+
+  // 2. Force coincident seam vertices to their average displaced position
+  for (const group of seamGroups) {
+    let ax = 0;
+    let ay = 0;
+    let az = 0;
+    for (const idx of group) {
+      const i3 = idx * 3;
+      ax += positions[i3];
+      ay += positions[i3 + 1];
+      az += positions[i3 + 2];
+    }
+    ax /= group.length;
+    ay /= group.length;
+    az /= group.length;
+    for (const idx of group) {
+      const i3 = idx * 3;
+      positions[i3] = ax;
+      positions[i3 + 1] = ay;
+      positions[i3 + 2] = az;
+    }
   }
 }
 
