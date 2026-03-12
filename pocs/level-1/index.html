@@ -14,14 +14,12 @@
     height: 100vh;
     width: 100vw;
   }
-
   canvas { display: block; width: 100%; height: 100%; }
 
-  /* ---- Floating Palette ---- */
-  #palette {
+  /* ---- Shared panel style ---- */
+  .floating-panel {
     position: fixed;
     top: 50%;
-    left: 16px;
     transform: translateY(-50%);
     z-index: 20;
     display: flex;
@@ -33,10 +31,8 @@
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 14px;
     padding: 14px 12px;
-    min-width: 140px;
   }
-
-  #palette h3 {
+  .floating-panel h3 {
     font-size: 10px;
     font-weight: 600;
     text-transform: uppercase;
@@ -45,6 +41,9 @@
     margin-bottom: 2px;
     text-align: center;
   }
+
+  /* ---- Left Palette ---- */
+  #palette { left: 16px; min-width: 140px; }
 
   .atom-btn {
     display: flex;
@@ -75,50 +74,28 @@
     box-shadow: 0 0 12px rgba(var(--atom-rgb), 0.3);
   }
   .atom-btn .dot {
-    width: 14px;
-    height: 14px;
+    width: 14px; height: 14px;
     border-radius: 50%;
     flex-shrink: 0;
     box-shadow: 0 0 6px currentColor;
   }
-  .atom-btn .dot.capsule {
-    border-radius: 7px;
-    width: 22px;
-    height: 10px;
-  }
+  .atom-btn .dot.capsule { border-radius: 7px; width: 22px; height: 10px; }
   .atom-btn .label { font-size: 12px; }
-  .atom-btn .hint {
-    font-size: 9px;
-    color: #666;
-    margin-left: auto;
-  }
+  .atom-btn .hint { font-size: 9px; color: #666; margin-left: auto; }
 
-  /* ---- Tool buttons ---- */
-  .tool-sep {
-    height: 1px;
-    background: rgba(255, 255, 255, 0.06);
-    margin: 4px 0;
-  }
+  .tool-sep { height: 1px; background: rgba(255, 255, 255, 0.06); margin: 4px 0; }
 
   .tool-btn {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    display: flex; align-items: center; gap: 8px;
     padding: 7px 12px;
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 10px;
-    color: #888;
-    font-size: 12px;
-    cursor: pointer;
+    color: #888; font-size: 12px; cursor: pointer;
     transition: all 0.15s ease;
-    user-select: none;
-    -webkit-user-select: none;
+    user-select: none; -webkit-user-select: none;
   }
-  .tool-btn:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: #ccc;
-  }
+  .tool-btn:hover { background: rgba(255, 255, 255, 0.08); color: #ccc; }
   .tool-btn.active {
     background: rgba(79, 195, 247, 0.15);
     border-color: rgba(79, 195, 247, 0.4);
@@ -126,134 +103,141 @@
   }
   .tool-btn .icon { font-size: 15px; width: 18px; text-align: center; }
 
-  /* ---- Top HUD ---- */
-  #hud-top {
-    position: fixed;
-    top: 12px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 20;
-    display: flex;
-    align-items: center;
-    gap: 12px;
+  /* ---- Right Panel: Machines ---- */
+  #machines { right: 16px; min-width: 170px; max-width: 190px; max-height: 80vh; overflow-y: auto; }
+  #machines::-webkit-scrollbar { width: 4px; }
+  #machines::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+  .machine-card {
+    padding: 10px 12px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    cursor: grab;
+    transition: all 0.15s ease;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .machine-card:hover {
+    background: rgba(255, 255, 255, 0.07);
+    border-color: rgba(255, 255, 255, 0.14);
+    transform: translateX(-2px);
+  }
+  .machine-card .machine-name {
+    font-size: 12px; font-weight: 600; color: #ccc;
+    margin-bottom: 3px;
+  }
+  .machine-card .machine-desc {
+    font-size: 10px; color: #666; line-height: 1.3;
+  }
+  .machine-card .machine-atoms {
+    display: flex; gap: 3px; margin-top: 6px; flex-wrap: wrap;
+  }
+  .machine-card .machine-atoms .ma-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+  }
+  .machine-card .machine-atoms .ma-dot.capsule {
+    border-radius: 4px; width: 12px; height: 6px;
   }
 
+  /* ---- Top HUD ---- */
+  #hud-top {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+    z-index: 20; display: flex; align-items: center; gap: 12px;
+  }
   #freeze-btn {
-    display: flex;
-    align-items: center;
-    gap: 6px;
+    display: flex; align-items: center; gap: 6px;
     padding: 6px 18px;
     background: rgba(10, 10, 20, 0.6);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
     border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 20px;
-    color: #888;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
+    border-radius: 20px; color: #888;
+    font-size: 12px; font-weight: 600; cursor: pointer;
     transition: all 0.2s ease;
-    text-transform: uppercase;
-    letter-spacing: 1px;
+    text-transform: uppercase; letter-spacing: 1px;
   }
   #freeze-btn:hover { color: #bbb; border-color: rgba(255, 255, 255, 0.2); }
   #freeze-btn.frozen {
-    color: #4fc3f7;
-    border-color: rgba(79, 195, 247, 0.5);
+    color: #4fc3f7; border-color: rgba(79, 195, 247, 0.5);
     background: rgba(79, 195, 247, 0.12);
     box-shadow: 0 0 20px rgba(79, 195, 247, 0.15);
   }
   #freeze-btn .icon { font-size: 14px; }
-
   #atom-count {
     padding: 5px 14px;
     background: rgba(10, 10, 20, 0.5);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
     border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 20px;
-    font-size: 11px;
-    color: #666;
-    letter-spacing: 0.5px;
+    border-radius: 20px; font-size: 11px; color: #666; letter-spacing: 0.5px;
   }
+  #signal-indicator {
+    padding: 5px 14px;
+    background: rgba(10, 10, 20, 0.5);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 20px; font-size: 11px; color: #555; letter-spacing: 0.5px;
+    transition: all 0.2s;
+  }
+  #signal-indicator.active { color: #a8c744; border-color: rgba(168,199,68,0.3); }
 
   /* ---- Bottom hint ---- */
   #hint-bar {
-    position: fixed;
-    bottom: 14px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 20;
-    padding: 5px 20px;
-    background: rgba(10, 10, 20, 0.5);
-    backdrop-filter: blur(8px);
-    border-radius: 20px;
-    font-size: 11px;
-    color: #555;
-    white-space: nowrap;
-    pointer-events: none;
+    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+    z-index: 20; padding: 5px 20px;
+    background: rgba(10, 10, 20, 0.5); backdrop-filter: blur(8px);
+    border-radius: 20px; font-size: 11px; color: #555;
+    white-space: nowrap; pointer-events: none;
   }
 
   /* ---- Toast ---- */
   #toast {
-    position: fixed;
-    bottom: 50px;
-    left: 50%;
+    position: fixed; bottom: 50px; left: 50%;
     transform: translateX(-50%) translateY(20px);
-    background: rgba(79, 195, 247, 0.9);
-    color: #0a0a1e;
-    padding: 8px 24px;
-    border-radius: 8px;
-    font-size: 13px;
-    font-weight: 600;
-    opacity: 0;
-    transition: opacity 0.3s, transform 0.3s;
-    pointer-events: none;
-    z-index: 100;
+    background: rgba(79, 195, 247, 0.9); color: #0a0a1e;
+    padding: 8px 24px; border-radius: 8px;
+    font-size: 13px; font-weight: 600;
+    opacity: 0; transition: opacity 0.3s, transform 0.3s;
+    pointer-events: none; z-index: 100;
   }
   #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-  /* Drag ghost on cursor */
+  /* Drag ghost */
   #drag-ghost {
-    position: fixed;
-    pointer-events: none;
-    z-index: 1000;
-    width: 28px;
-    height: 28px;
-    border-radius: 50%;
-    opacity: 0.7;
-    display: none;
+    position: fixed; pointer-events: none; z-index: 1000;
+    width: 28px; height: 28px; border-radius: 50%;
+    opacity: 0.7; display: none;
     transform: translate(-50%, -50%);
     box-shadow: 0 0 16px currentColor;
   }
-  #drag-ghost.capsule {
-    border-radius: 14px;
-    width: 36px;
-    height: 18px;
-  }
+  #drag-ghost.capsule { border-radius: 14px; width: 36px; height: 18px; }
 </style>
 </head>
 <body>
 
-<!-- Floating atom palette -->
-<div id="palette">
+<!-- Left: Atom palette -->
+<div id="palette" class="floating-panel">
   <h3>Atoms</h3>
-  <!-- populated by JS -->
+</div>
+
+<!-- Right: Machines palette -->
+<div id="machines" class="floating-panel">
+  <h3>Machines</h3>
 </div>
 
 <!-- Top HUD -->
 <div id="hud-top">
   <button id="freeze-btn" class="frozen">
-    <span class="icon">❄</span>
+    <span class="icon">&#10052;</span>
     <span id="freeze-label">Frozen</span>
     <span style="font-size:10px;color:#666;margin-left:4px">[Space]</span>
   </button>
   <div id="atom-count">0 atoms</div>
+  <div id="signal-indicator">signals: idle</div>
 </div>
 
 <!-- Bottom hint -->
 <div id="hint-bar">
-  Drag atom from palette · Click to place · [V] select tool · [Space] freeze/unfreeze · Right-click remove · [Ctrl+Z] undo
+  Drag atom/machine to place · [V] select/move tool · [Space] freeze/unfreeze · Right-click remove · Dbl-click toggle · [1-5] quick-select
 </div>
 
 <div id="toast"></div>
@@ -276,122 +260,171 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 // CONSTANTS
 // ===========================================================================
 
-// -- Scene --
 const BG_COLOR = 0x0a0a14;
 const FOG_NEAR = 15;
 const FOG_FAR = 60;
 
-// -- Ground --
 const GROUND_SIZE = 40;
 const GROUND_DIVISIONS = 40;
 const GROUND_GRID_COLOR = 0x1a1a30;
 const GROUND_Y = -2;
 
-// -- Camera --
 const CAMERA_FOV = 50;
 const CAMERA_NEAR = 0.1;
 const CAMERA_FAR = 100;
 const CAMERA_INITIAL_POS = [3, 2.5, 5];
 const ORBIT_DAMPING = 0.08;
 
-// -- Lighting --
 const AMBIENT_INTENSITY = 0.4;
-const DIRECTIONAL_INTENSITY = 1.0;
-const DIRECTIONAL_POS = [5, 10, 7];
-const HEMISPHERE_SKY = 0x4466aa;
-const HEMISPHERE_GROUND = 0x1a1a2e;
-const HEMISPHERE_INTENSITY = 0.5;
+const DIR_LIGHT_INTENSITY = 1.0;
+const DIR_LIGHT_POS = [5, 10, 7];
+const HEMI_SKY = 0x4466aa;
+const HEMI_GROUND = 0x1a1a2e;
+const HEMI_INTENSITY = 0.5;
 
-// -- Atom sizes --
 const ATOM_RADIUS = 0.25;
 const ATOM_SEGMENTS = 28;
 const FLEX_RADIUS = 0.12;
 const FLEX_LENGTH = 0.6;
 const FLEX_CAP_SEGMENTS = 12;
 
-// -- Connection --
-const CONNECTION_SNAP_DISTANCE = 0.55;
-const CONNECTION_SHOW_DISTANCE = 1.2;
+const SNAP_DISTANCE = 0.55;
+const SHOW_TENDRIL_DISTANCE = 1.2;
 const NODE_RADIUS = 0.045;
 const NODE_SEGMENTS = 10;
-const NODE_COUNT_SPHERE = 6;  // connection nodes on sphere atoms
-const NODE_COUNT_FLEX = 2;    // connection nodes on flex (ends only)
-const CONNECTION_BRIDGE_RADIUS = 0.015;
-const CONNECTION_BRIDGE_COLOR = 0x88ddff;
+const BRIDGE_RADIUS = 0.015;
+const BRIDGE_COLOR = 0x88ddff;
 const TENDRIL_COLOR = 0x44aadd;
 
-// -- Ghost preview --
 const GHOST_OPACITY = 0.35;
-
-// -- Snap animation --
 const SNAP_DURATION_MS = 250;
 const SNAP_OVERSHOOT = 1.15;
-
-// -- Breathing animation --
 const BREATH_SPEED = 1.5;
 const BREATH_AMPLITUDE = 0.02;
 
-// -- Active pulse animation --
-const PULSE_KICK_SCALE = 1.2;
-const PULSE_KICK_DURATION_MS = 150;
-
-// -- Physics --
 const GRAVITY = -9.8;
-const PHYSICS_TIMESTEP = 1 / 60;
 const DAMPING = 0.95;
-const GROUND_RESTITUTION = 0.3;
+const GROUND_BOUNCE = 0.3;
+const SPRING_K = 50;
+const REST_LENGTH_FACTOR = 2.2;
+const GROUND_FRICTION = 0.92;
 
-// -- Raycaster --
 const RAYCAST_THRESHOLD = 0.4;
 
-// -- Atom visual definitions --
+// Signal system
+const SIGNAL_SPEED = 4.0;
+const PULSE_FIRE_INTERVAL = 1.0;
+const PULSE_FORCE_STRENGTH = 3.0;
+const SENSE_DETECTION_RANGE = 2.0;
+const SENSE_CONE_ANGLE = Math.PI / 3;
+const SENSE_COOLDOWN = 0.5;
+const SIGNAL_DOT_RADIUS = 0.035;
+const SIGNAL_DOT_COLOR = 0xffee44;
+const SIGNAL_CHARGE_DECAY = 1.5;
+const KICK_VIS_DURATION = 0.3;
+
+// ===========================================================================
+// ATOM DEFINITIONS
+// ===========================================================================
+
 const ATOM_DEFS = {
-  pulse: {
-    name: 'PULSE',
-    hint: 'Force',
-    color: 0xe8603c,
-    emissive: 0xcc4422,
-    emissiveIntensity: 0.3,
-    rgb: '232,96,60',
-    description: 'Emits force impulse — the muscle'
-  },
-  sense: {
-    name: 'SENSE',
-    hint: 'Detect',
-    color: 0x3498db,
-    emissive: 0x2277bb,
-    emissiveIntensity: 0.4,
-    rgb: '52,152,219',
-    description: 'Detects conditions — the nerve ending'
-  },
-  relay: {
-    name: 'RELAY',
-    hint: 'Logic',
-    color: 0xa8c744,
-    emissive: 0x88aa22,
-    emissiveIntensity: 0.25,
-    rgb: '168,199,68',
-    description: 'Pass/block/invert signals — the synapse'
-  },
-  hold: {
-    name: 'HOLD',
-    hint: 'Memory',
-    color: 0x8844cc,
-    emissive: 0x7733bb,
-    emissiveIntensity: 0.35,
-    rgb: '136,68,204',
-    description: 'Toggle on/off state — the neuron'
-  },
-  flex: {
-    name: 'FLEX',
-    hint: 'Joint',
-    color: 0xc0c0c8,
-    emissive: 0x888890,
-    emissiveIntensity: 0.15,
-    rgb: '192,192,200',
-    description: 'Rigid bone or elastic spring — the skeleton'
-  }
+  pulse: { name: 'PULSE', hint: 'Force', color: 0xe8603c, emissive: 0xcc4422, emissiveIntensity: 0.3, rgb: '232,96,60' },
+  sense: { name: 'SENSE', hint: 'Detect', color: 0x3498db, emissive: 0x2277bb, emissiveIntensity: 0.4, rgb: '52,152,219' },
+  relay: { name: 'RELAY', hint: 'Logic', color: 0xa8c744, emissive: 0x88aa22, emissiveIntensity: 0.25, rgb: '168,199,68' },
+  hold:  { name: 'HOLD',  hint: 'Memory', color: 0x8844cc, emissive: 0x7733bb, emissiveIntensity: 0.35, rgb: '136,68,204' },
+  flex:  { name: 'FLEX',  hint: 'Joint', color: 0xc0c0c8, emissive: 0x888890, emissiveIntensity: 0.15, rgb: '192,192,200' },
 };
+
+// ===========================================================================
+// PREBUILT MACHINES
+// ===========================================================================
+
+const PREBUILT_MACHINES = [
+  {
+    name: 'Oscillator',
+    desc: 'PULSE pushes through FLEX — watch it bounce rhythmically',
+    atoms: [
+      { type: 'pulse', offset: [0, 0, 0] },
+      { type: 'flex',  offset: [0.55, 0, 0] },
+      { type: 'flex',  offset: [-0.55, 0, 0] },
+    ],
+    autoConnect: [[0, 1], [0, 2]],
+  },
+  {
+    name: 'Walker',
+    desc: 'Two PULSEs on FLEX legs — lurches forward when unfrozen',
+    atoms: [
+      { type: 'flex',  offset: [0, 0, 0] },
+      { type: 'pulse', offset: [0.45, -0.3, 0] },
+      { type: 'pulse', offset: [-0.45, -0.3, 0] },
+      { type: 'flex',  offset: [0.45, 0.1, 0] },
+      { type: 'flex',  offset: [-0.45, 0.1, 0] },
+    ],
+    autoConnect: [[0, 3], [0, 4], [3, 1], [4, 2]],
+  },
+  {
+    name: 'Tracker',
+    desc: 'SENSE detects nearby atoms, RELAY routes signal, PULSE kicks toward them',
+    atoms: [
+      { type: 'sense', offset: [0, 0, 0.3] },
+      { type: 'relay', offset: [0, 0, 0] },
+      { type: 'pulse', offset: [0, 0, -0.3] },
+      { type: 'flex',  offset: [0.45, -0.2, 0] },
+      { type: 'flex',  offset: [-0.45, -0.2, 0] },
+    ],
+    autoConnect: [[0, 1], [1, 2], [1, 3], [1, 4]],
+  },
+  {
+    name: 'Memory Toggle',
+    desc: 'SENSE triggers HOLD — watch the nucleus snap on/off as things pass near',
+    atoms: [
+      { type: 'sense', offset: [0, 0, 0.3] },
+      { type: 'relay', offset: [0, 0, 0] },
+      { type: 'hold',  offset: [0, 0, -0.3] },
+    ],
+    autoConnect: [[0, 1], [1, 2]],
+  },
+  {
+    name: 'Signal Chain',
+    desc: 'PULSE fires through 3 RELAYs — watch the yellow dot travel link by link',
+    atoms: [
+      { type: 'pulse', offset: [-0.8, 0, 0] },
+      { type: 'relay', offset: [-0.27, 0, 0] },
+      { type: 'relay', offset: [0.27, 0, 0] },
+      { type: 'relay', offset: [0.8, 0, 0] },
+    ],
+    autoConnect: [[0, 1], [1, 2], [2, 3]],
+  },
+  {
+    name: 'Reflex Arc',
+    desc: 'SENSE -> RELAY -> PULSE -> FLEX. Touch it and it kicks!',
+    atoms: [
+      { type: 'sense', offset: [0, 0, 0.55] },
+      { type: 'relay', offset: [0, 0, 0.0] },
+      { type: 'pulse', offset: [0, 0, -0.55] },
+      { type: 'flex',  offset: [0, -0.4, -0.55] },
+      { type: 'flex',  offset: [0.35, -0.3, 0] },
+      { type: 'flex',  offset: [-0.35, -0.3, 0] },
+    ],
+    autoConnect: [[0, 1], [1, 2], [2, 3], [1, 4], [1, 5]],
+  },
+  {
+    name: 'Crawler',
+    desc: 'SENSE-driven PULSE chain on FLEX skeleton. Moves toward things it sees.',
+    atoms: [
+      { type: 'sense', offset: [0, 0.15, 0.7] },
+      { type: 'relay', offset: [0, 0, 0.35] },
+      { type: 'hold',  offset: [0, 0, 0] },
+      { type: 'pulse', offset: [0.3, 0, -0.35] },
+      { type: 'pulse', offset: [-0.3, 0, -0.35] },
+      { type: 'flex',  offset: [0.5, -0.3, 0.2] },
+      { type: 'flex',  offset: [-0.5, -0.3, 0.2] },
+      { type: 'flex',  offset: [0.5, -0.3, -0.3] },
+      { type: 'flex',  offset: [-0.5, -0.3, -0.3] },
+    ],
+    autoConnect: [[0, 1], [1, 2], [2, 3], [2, 4], [1, 5], [1, 6], [3, 7], [4, 8]],
+  },
+];
 
 // ===========================================================================
 // STATE
@@ -400,29 +433,24 @@ const ATOM_DEFS = {
 let renderer, scene, camera, controls;
 const raycaster = new THREE.Raycaster();
 const mouseNDC = new THREE.Vector2();
-const mouseScreen = new THREE.Vector2();
 
-// World state
-const atoms = [];       // { id, type, mesh, group, nodes[], connections[], velocity, grounded }
-const connections = [];  // { fromAtomId, toAtomId, fromNodeIdx, toNodeIdx, bridgeMesh }
+const atoms = [];
+const connections = [];
+const signals = [];
 let nextAtomId = 0;
-const history = [];      // for undo
+const undoHistory = [];
 
-// Tools
-let currentTool = null;        // null = place mode, 'select' = select/move
-let selectedAtomType = null;   // which atom type is being placed
-let selectedAtom = null;       // currently selected atom (for move tool)
+let currentTool = null;
+let selectedAtomType = null;
+let selectedAtom = null;
 let isDraggingAtom = false;
-let dragPlane = new THREE.Plane();
-let dragOffset = new THREE.Vector3();
-let isFrozen = true;           // start frozen for assembly
+const dragPlane = new THREE.Plane();
+const dragOffset = new THREE.Vector3();
+let isFrozen = true;
 let ghostMesh = null;
-
-// Drag from palette
 let isDraggingFromPalette = false;
 let dragAtomType = null;
-
-// Hover state
+let isDraggingMachine = false;
 let hoveredAtom = null;
 
 // ===========================================================================
@@ -437,35 +465,33 @@ function showToast(msg) {
 }
 
 function updateAtomCount() {
-  document.getElementById('atom-count').textContent = `${atoms.length} atom${atoms.length !== 1 ? 's' : ''}`;
+  document.getElementById('atom-count').textContent =
+    `${atoms.length} atom${atoms.length !== 1 ? 's' : ''}`;
 }
 
 // ===========================================================================
-// CONNECTION NODE POSITIONS
+// NODE POSITIONS
 // ===========================================================================
 
-// Returns world-space positions of connection nodes for an atom
+const CARDINAL_DIRS = [
+  [0, 1, 0], [0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]
+];
+
 function getNodePositions(atom) {
-  const positions = [];
+  const pos = [];
   if (atom.type === 'flex') {
-    // Two ends of the capsule
     const dir = new THREE.Vector3(0, 0, 1).applyQuaternion(atom.group.quaternion);
-    const halfLen = FLEX_LENGTH * 0.5;
-    positions.push(atom.group.position.clone().add(dir.clone().multiplyScalar(halfLen)));
-    positions.push(atom.group.position.clone().add(dir.clone().multiplyScalar(-halfLen)));
+    const h = FLEX_LENGTH * 0.5;
+    pos.push(atom.group.position.clone().addScaledVector(dir, h));
+    pos.push(atom.group.position.clone().addScaledVector(dir, -h));
   } else {
-    // 6 cardinal directions on sphere surface
-    const dirs = [
-      [0, 1, 0], [0, -1, 0],
-      [1, 0, 0], [-1, 0, 0],
-      [0, 0, 1], [0, 0, -1]
-    ];
-    for (const d of dirs) {
-      const offset = new THREE.Vector3(d[0], d[1], d[2]).multiplyScalar(ATOM_RADIUS);
-      positions.push(atom.group.position.clone().add(offset));
+    for (const d of CARDINAL_DIRS) {
+      pos.push(atom.group.position.clone().add(
+        new THREE.Vector3(d[0], d[1], d[2]).multiplyScalar(ATOM_RADIUS)
+      ));
     }
   }
-  return positions;
+  return pos;
 }
 
 // ===========================================================================
@@ -478,186 +504,124 @@ function createAtomGroup(type, isGhost = false) {
   group.userData.atomType = type;
 
   const matOpts = {
-    color: def.color,
-    roughness: 0.35,
-    metalness: 0.15,
+    color: def.color, roughness: 0.35, metalness: 0.15,
     emissive: def.emissive,
     emissiveIntensity: isGhost ? 0 : def.emissiveIntensity,
   };
-
-  if (isGhost) {
-    matOpts.transparent = true;
-    matOpts.opacity = GHOST_OPACITY;
-  }
-
+  if (isGhost) { matOpts.transparent = true; matOpts.opacity = GHOST_OPACITY; }
   const mat = new THREE.MeshStandardMaterial(matOpts);
 
   if (type === 'flex') {
-    // Capsule shape
-    const geo = new THREE.CapsuleGeometry(FLEX_RADIUS, FLEX_LENGTH, FLEX_CAP_SEGMENTS, FLEX_CAP_SEGMENTS);
-    const mesh = new THREE.Mesh(geo, mat);
-    // Rotate so length is along Z
+    const mesh = new THREE.Mesh(
+      new THREE.CapsuleGeometry(FLEX_RADIUS, FLEX_LENGTH, FLEX_CAP_SEGMENTS, FLEX_CAP_SEGMENTS), mat
+    );
     mesh.rotation.x = Math.PI / 2;
+    if (!isGhost) { mat.metalness = 0.4; mat.roughness = 0.25; }
     group.add(mesh);
-
-    if (type === 'flex' && !isGhost) {
-      // Silver brushed feel
-      mat.metalness = 0.4;
-      mat.roughness = 0.25;
-    }
   } else if (type === 'hold') {
-    // Translucent outer shell + inner nucleus
-    const outerGeo = new THREE.SphereGeometry(ATOM_RADIUS, ATOM_SEGMENTS, ATOM_SEGMENTS);
     const outerMat = new THREE.MeshStandardMaterial({
-      color: def.color,
-      roughness: 0.3,
-      metalness: 0.1,
-      transparent: true,
-      opacity: isGhost ? GHOST_OPACITY : 0.45,
-      emissive: def.emissive,
-      emissiveIntensity: isGhost ? 0 : 0.15,
+      color: def.color, roughness: 0.3, metalness: 0.1,
+      transparent: true, opacity: isGhost ? GHOST_OPACITY : 0.45,
+      emissive: def.emissive, emissiveIntensity: isGhost ? 0 : 0.15,
     });
-    group.add(new THREE.Mesh(outerGeo, outerMat));
-
-    // Inner nucleus
-    const NUCLEUS_RADIUS = ATOM_RADIUS * 0.5;
-    const innerGeo = new THREE.SphereGeometry(NUCLEUS_RADIUS, 16, 16);
+    group.add(new THREE.Mesh(new THREE.SphereGeometry(ATOM_RADIUS, ATOM_SEGMENTS, ATOM_SEGMENTS), outerMat));
     const innerMat = new THREE.MeshStandardMaterial({
-      color: 0xbb66ee,
-      emissive: 0xbb66ee,
-      emissiveIntensity: isGhost ? 0 : 0.6,
-      roughness: 0.2,
-      metalness: 0.3,
+      color: 0xbb66ee, emissive: 0xbb66ee,
+      emissiveIntensity: isGhost ? 0 : 0.2, roughness: 0.2, metalness: 0.3,
     });
-    if (isGhost) {
-      innerMat.transparent = true;
-      innerMat.opacity = GHOST_OPACITY;
-    }
-    const innerMesh = new THREE.Mesh(innerGeo, innerMat);
-    group.add(innerMesh);
-    group.userData.nucleus = innerMesh;
+    if (isGhost) { innerMat.transparent = true; innerMat.opacity = GHOST_OPACITY; }
+    const nucleus = new THREE.Mesh(new THREE.SphereGeometry(ATOM_RADIUS * 0.5, 16, 16), innerMat);
+    group.add(nucleus);
+    group.userData.nucleus = nucleus;
     group.userData.isOn = false;
   } else if (type === 'sense') {
-    // Main sphere
-    const geo = new THREE.SphereGeometry(ATOM_RADIUS, ATOM_SEGMENTS, ATOM_SEGMENTS);
-    group.add(new THREE.Mesh(geo, mat));
-
-    // Detection cone (subtle, translucent)
+    group.add(new THREE.Mesh(new THREE.SphereGeometry(ATOM_RADIUS, ATOM_SEGMENTS, ATOM_SEGMENTS), mat));
     if (!isGhost) {
-      const CONE_LENGTH = 0.5;
-      const CONE_RADIUS = 0.3;
-      const coneGeo = new THREE.ConeGeometry(CONE_RADIUS, CONE_LENGTH, 16, 1, true);
       const coneMat = new THREE.MeshStandardMaterial({
-        color: 0x3498db,
-        emissive: 0x2288cc,
-        emissiveIntensity: 0.3,
-        transparent: true,
-        opacity: 0.12,
-        side: THREE.DoubleSide,
+        color: 0x3498db, emissive: 0x2288cc, emissiveIntensity: 0.3,
+        transparent: true, opacity: 0.1, side: THREE.DoubleSide,
       });
-      const cone = new THREE.Mesh(coneGeo, coneMat);
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.5, 16, 1, true), coneMat);
       cone.rotation.x = -Math.PI / 2;
-      cone.position.z = ATOM_RADIUS + CONE_LENGTH * 0.5;
+      cone.position.z = ATOM_RADIUS + 0.25;
       group.add(cone);
       group.userData.cone = cone;
-    }
-
-    // Iris on front
-    if (!isGhost) {
-      const IRIS_RADIUS = 0.08;
-      const irisGeo = new THREE.CircleGeometry(IRIS_RADIUS, 16);
       const irisMat = new THREE.MeshStandardMaterial({
-        color: 0x0a0a14,
-        emissive: 0x1155aa,
-        emissiveIntensity: 0.8,
+        color: 0x0a0a14, emissive: 0x1155aa, emissiveIntensity: 0.8,
       });
-      const iris = new THREE.Mesh(irisGeo, irisMat);
+      const iris = new THREE.Mesh(new THREE.CircleGeometry(0.08, 16), irisMat);
       iris.position.z = ATOM_RADIUS + 0.001;
       group.add(iris);
       group.userData.iris = iris;
     }
   } else if (type === 'pulse') {
-    const geo = new THREE.SphereGeometry(ATOM_RADIUS, ATOM_SEGMENTS, ATOM_SEGMENTS);
-    group.add(new THREE.Mesh(geo, mat));
-
-    // Nozzle dimple
+    group.add(new THREE.Mesh(new THREE.SphereGeometry(ATOM_RADIUS, ATOM_SEGMENTS, ATOM_SEGMENTS), mat));
     if (!isGhost) {
-      const NOZZLE_RADIUS = 0.06;
-      const NOZZLE_DEPTH = 0.04;
-      const nozzleGeo = new THREE.CylinderGeometry(NOZZLE_RADIUS, NOZZLE_RADIUS * 0.4, NOZZLE_DEPTH, 12);
-      const nozzleMat = new THREE.MeshStandardMaterial({
-        color: 0x441100,
-        roughness: 0.8,
-      });
-      const nozzle = new THREE.Mesh(nozzleGeo, nozzleMat);
+      const nozzle = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.06, 0.024, 0.04, 12),
+        new THREE.MeshStandardMaterial({ color: 0x441100, roughness: 0.8 })
+      );
       nozzle.rotation.x = Math.PI / 2;
-      nozzle.position.z = ATOM_RADIUS - NOZZLE_DEPTH * 0.3;
+      nozzle.position.z = ATOM_RADIUS - 0.012;
       group.add(nozzle);
+      const ringMat = new THREE.MeshStandardMaterial({
+        color: 0xff6633, emissive: 0xff4411, emissiveIntensity: 1.5,
+        transparent: true, opacity: 0,
+      });
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(ATOM_RADIUS * 0.8, 0.015, 8, 24), ringMat);
+      ring.rotation.x = Math.PI / 2;
+      group.add(ring);
+      group.userData.kickRing = ring;
+      group.userData.kickTime = -999;
     }
+    group.userData.lastFireTime = -PULSE_FIRE_INTERVAL;
+    group.userData.pulsePhase = Math.random() * Math.PI * 2;
   } else if (type === 'relay') {
-    const geo = new THREE.SphereGeometry(ATOM_RADIUS, ATOM_SEGMENTS, ATOM_SEGMENTS);
-    group.add(new THREE.Mesh(geo, mat));
-
-    // Visible groove/channel
+    group.add(new THREE.Mesh(new THREE.SphereGeometry(ATOM_RADIUS, ATOM_SEGMENTS, ATOM_SEGMENTS), mat));
     if (!isGhost) {
-      const GROOVE_RADIUS = 0.02;
       const groovePath = new THREE.LineCurve3(
         new THREE.Vector3(-ATOM_RADIUS * 0.9, 0, 0),
         new THREE.Vector3(ATOM_RADIUS * 0.9, 0, 0)
       );
-      const grooveGeo = new THREE.TubeGeometry(groovePath, 8, GROOVE_RADIUS, 6, false);
       const grooveMat = new THREE.MeshStandardMaterial({
-        color: 0xccff44,
-        emissive: 0xaadd22,
-        emissiveIntensity: 0.6,
-        transparent: true,
-        opacity: 0.7,
+        color: 0xccff44, emissive: 0xaadd22, emissiveIntensity: 0.6,
+        transparent: true, opacity: 0.7,
       });
-      const groove = new THREE.Mesh(grooveGeo, grooveMat);
+      const groove = new THREE.Mesh(new THREE.TubeGeometry(groovePath, 8, 0.02, 6, false), grooveMat);
       groove.position.y = ATOM_RADIUS * 0.15;
       group.add(groove);
       group.userData.groove = groove;
-      group.userData.relayMode = 'pass'; // pass, block, invert
+      const barrierMat = new THREE.MeshStandardMaterial({
+        color: 0xff4444, emissive: 0xcc2222, emissiveIntensity: 0.5,
+        transparent: true, opacity: 0,
+      });
+      const barrier = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.06, 0.06), barrierMat);
+      barrier.position.y = ATOM_RADIUS * 0.15;
+      group.add(barrier);
+      group.userData.barrier = barrier;
     }
-  } else {
-    // Fallback sphere
-    const geo = new THREE.SphereGeometry(ATOM_RADIUS, ATOM_SEGMENTS, ATOM_SEGMENTS);
-    group.add(new THREE.Mesh(geo, mat));
+    group.userData.relayMode = 'pass';
   }
 
-  // Add connection node meshes (small glowing bumps)
+  // Connection nodes
   if (!isGhost) {
     const nodeGeo = new THREE.SphereGeometry(NODE_RADIUS, NODE_SEGMENTS, NODE_SEGMENTS);
     const nodeMat = new THREE.MeshStandardMaterial({
-      color: 0x88ddff,
-      emissive: 0x44aacc,
-      emissiveIntensity: 1.0,
-      transparent: true,
-      opacity: 0.6,
+      color: 0x88ddff, emissive: 0x44aacc, emissiveIntensity: 1.0,
+      transparent: true, opacity: 0.6,
     });
-
-    const nodeCount = type === 'flex' ? NODE_COUNT_FLEX : NODE_COUNT_SPHERE;
     const nodeMeshes = [];
-
     if (type === 'flex') {
-      const halfLen = FLEX_LENGTH * 0.5;
-      for (const z of [halfLen, -halfLen]) {
+      for (const z of [FLEX_LENGTH * 0.5, -FLEX_LENGTH * 0.5]) {
         const nm = new THREE.Mesh(nodeGeo, nodeMat.clone());
         nm.position.set(0, 0, z);
-        group.add(nm);
-        nodeMeshes.push(nm);
+        group.add(nm); nodeMeshes.push(nm);
       }
     } else {
-      const dirs = [
-        [0, 1, 0], [0, -1, 0],
-        [1, 0, 0], [-1, 0, 0],
-        [0, 0, 1], [0, 0, -1]
-      ];
-      for (const d of dirs) {
+      for (const d of CARDINAL_DIRS) {
         const nm = new THREE.Mesh(nodeGeo, nodeMat.clone());
         nm.position.set(d[0] * ATOM_RADIUS, d[1] * ATOM_RADIUS, d[2] * ATOM_RADIUS);
-        group.add(nm);
-        nodeMeshes.push(nm);
+        group.add(nm); nodeMeshes.push(nm);
       }
     }
     group.userData.nodeMeshes = nodeMeshes;
@@ -677,66 +641,42 @@ function addAtom(type, position) {
   scene.add(group);
 
   const atom = {
-    id,
-    type,
-    group,
+    id, type, group,
     connections: [],
     velocity: new THREE.Vector3(),
     grounded: false,
     breathPhase: Math.random() * Math.PI * 2,
+    signalCharge: 0,
+    signalCooldown: 0,
   };
 
   atoms.push(atom);
-  history.push({ action: 'add', atomId: id });
+  undoHistory.push({ action: 'add', atomId: id });
   updateAtomCount();
-
-  // Snap-in animation
   animateSnap(group);
-
-  // Check for nearby connections
-  if (!isDraggingAtom) {
-    checkAndFormConnections(atom);
-  }
-
+  if (!isDraggingAtom) checkAndFormConnections(atom);
   return atom;
 }
 
 function removeAtom(id) {
   const idx = atoms.findIndex(a => a.id === id);
   if (idx === -1) return;
-
   const atom = atoms[idx];
-
-  // Remove all connections involving this atom
-  const connsToRemove = connections.filter(c => c.fromAtomId === id || c.toAtomId === id);
-  for (const conn of connsToRemove) {
-    removeConnection(conn);
-  }
-
+  for (const c of connections.filter(c => c.fromAtomId === id || c.toAtomId === id)) removeConnection(c);
   scene.remove(atom.group);
   atoms.splice(idx, 1);
-  history.push({ action: 'remove', atomId: id, type: atom.type, position: atom.group.position.clone() });
   updateAtomCount();
-
-  if (selectedAtom && selectedAtom.id === id) {
-    selectedAtom = null;
-  }
+  if (selectedAtom && selectedAtom.id === id) selectedAtom = null;
 }
 
 function animateSnap(group) {
-  const startTime = performance.now();
-  const startScale = 0.01;
-  group.scale.setScalar(startScale);
-
+  const start = performance.now();
+  group.scale.setScalar(0.01);
   const tick = () => {
-    const elapsed = performance.now() - startTime;
-    const t = Math.min(elapsed / SNAP_DURATION_MS, 1);
-    const eased = t < 0.5
-      ? 2 * t * t
-      : 1 + (SNAP_OVERSHOOT - 1) * Math.sin(t * Math.PI) * (1 - t);
-    group.scale.setScalar(Math.max(startScale, Math.min(eased, SNAP_OVERSHOOT)));
-    if (t < 1) requestAnimationFrame(tick);
-    else group.scale.setScalar(1);
+    const t = Math.min((performance.now() - start) / SNAP_DURATION_MS, 1);
+    const e = t < 0.5 ? 2 * t * t : 1 + (SNAP_OVERSHOOT - 1) * Math.sin(t * Math.PI) * (1 - t);
+    group.scale.setScalar(Math.max(0.01, Math.min(e, SNAP_OVERSHOOT)));
+    if (t < 1) requestAnimationFrame(tick); else group.scale.setScalar(1);
   };
   requestAnimationFrame(tick);
 }
@@ -745,48 +685,6 @@ function animateSnap(group) {
 // CONNECTIONS
 // ===========================================================================
 
-function checkAndFormConnections(atom) {
-  const myNodes = getNodePositions(atom);
-
-  for (const other of atoms) {
-    if (other.id === atom.id) continue;
-
-    // Check if already connected
-    const alreadyConnected = connections.some(c =>
-      (c.fromAtomId === atom.id && c.toAtomId === other.id) ||
-      (c.fromAtomId === other.id && c.toAtomId === atom.id)
-    );
-    if (alreadyConnected) continue;
-
-    const otherNodes = getNodePositions(other);
-
-    // Find closest pair of nodes
-    let bestDist = CONNECTION_SNAP_DISTANCE;
-    let bestFromIdx = -1;
-    let bestToIdx = -1;
-
-    for (let i = 0; i < myNodes.length; i++) {
-      // Skip if this node is already occupied
-      if (isNodeOccupied(atom.id, i)) continue;
-
-      for (let j = 0; j < otherNodes.length; j++) {
-        if (isNodeOccupied(other.id, j)) continue;
-
-        const dist = myNodes[i].distanceTo(otherNodes[j]);
-        if (dist < bestDist) {
-          bestDist = dist;
-          bestFromIdx = i;
-          bestToIdx = j;
-        }
-      }
-    }
-
-    if (bestFromIdx >= 0) {
-      formConnection(atom.id, other.id, bestFromIdx, bestToIdx);
-    }
-  }
-}
-
 function isNodeOccupied(atomId, nodeIdx) {
   return connections.some(c =>
     (c.fromAtomId === atomId && c.fromNodeIdx === nodeIdx) ||
@@ -794,37 +692,52 @@ function isNodeOccupied(atomId, nodeIdx) {
   );
 }
 
-function formConnection(fromAtomId, toAtomId, fromNodeIdx, toNodeIdx) {
-  // Create bridge mesh
-  const bridgeGeo = new THREE.CylinderGeometry(CONNECTION_BRIDGE_RADIUS, CONNECTION_BRIDGE_RADIUS, 1, 6);
+function checkAndFormConnections(atom) {
+  const myNodes = getNodePositions(atom);
+  for (const other of atoms) {
+    if (other.id === atom.id) continue;
+    if (connections.some(c =>
+      (c.fromAtomId === atom.id && c.toAtomId === other.id) ||
+      (c.fromAtomId === other.id && c.toAtomId === atom.id)
+    )) continue;
+
+    const otherNodes = getNodePositions(other);
+    let bestDist = SNAP_DISTANCE, bestFrom = -1, bestTo = -1;
+    for (let i = 0; i < myNodes.length; i++) {
+      if (isNodeOccupied(atom.id, i)) continue;
+      for (let j = 0; j < otherNodes.length; j++) {
+        if (isNodeOccupied(other.id, j)) continue;
+        const d = myNodes[i].distanceTo(otherNodes[j]);
+        if (d < bestDist) { bestDist = d; bestFrom = i; bestTo = j; }
+      }
+    }
+    if (bestFrom >= 0) formConnection(atom.id, other.id, bestFrom, bestTo);
+  }
+}
+
+function formConnection(fromId, toId, fromIdx, toIdx) {
   const bridgeMat = new THREE.MeshStandardMaterial({
-    color: CONNECTION_BRIDGE_COLOR,
-    emissive: CONNECTION_BRIDGE_COLOR,
-    emissiveIntensity: 0.8,
-    transparent: true,
-    opacity: 0.7,
+    color: BRIDGE_COLOR, emissive: BRIDGE_COLOR, emissiveIntensity: 0.8,
+    transparent: true, opacity: 0.7,
   });
-  const bridge = new THREE.Mesh(bridgeGeo, bridgeMat);
+  const bridge = new THREE.Mesh(
+    new THREE.CylinderGeometry(BRIDGE_RADIUS, BRIDGE_RADIUS, 1, 6), bridgeMat
+  );
   scene.add(bridge);
 
-  const conn = { fromAtomId, toAtomId, fromNodeIdx, toNodeIdx, bridgeMesh: bridge };
+  const conn = { fromAtomId: fromId, toAtomId: toId, fromNodeIdx: fromIdx, toNodeIdx: toIdx, bridgeMesh: bridge };
   connections.push(conn);
 
-  // Record on atoms
-  const fromAtom = atoms.find(a => a.id === fromAtomId);
-  const toAtom = atoms.find(a => a.id === toAtomId);
-  if (fromAtom) fromAtom.connections.push(conn);
-  if (toAtom) toAtom.connections.push(conn);
-
-  showToast('Connected!');
+  const fa = atoms.find(a => a.id === fromId);
+  const ta = atoms.find(a => a.id === toId);
+  if (fa) fa.connections.push(conn);
+  if (ta) ta.connections.push(conn);
 }
 
 function removeConnection(conn) {
   scene.remove(conn.bridgeMesh);
   const idx = connections.indexOf(conn);
   if (idx >= 0) connections.splice(idx, 1);
-
-  // Remove from atoms
   for (const atom of atoms) {
     const ci = atom.connections.indexOf(conn);
     if (ci >= 0) atom.connections.splice(ci, 1);
@@ -832,16 +745,16 @@ function removeConnection(conn) {
 }
 
 function updateConnectionBridges() {
-  for (const conn of connections) {
-    const fromAtom = atoms.find(a => a.id === conn.fromAtomId);
-    const toAtom = atoms.find(a => a.id === conn.toAtomId);
-    if (!fromAtom || !toAtom) continue;
+  for (let i = connections.length - 1; i >= 0; i--) {
+    const conn = connections[i];
+    const fa = atoms.find(a => a.id === conn.fromAtomId);
+    const ta = atoms.find(a => a.id === conn.toAtomId);
+    if (!fa || !ta) { removeConnection(conn); continue; }
 
-    const fromNodes = getNodePositions(fromAtom);
-    const toNodes = getNodePositions(toAtom);
-    const from = fromNodes[conn.fromNodeIdx];
-    const to = toNodes[conn.toNodeIdx];
-
+    const fNodes = getNodePositions(fa);
+    const tNodes = getNodePositions(ta);
+    const from = fNodes[conn.fromNodeIdx];
+    const to = tNodes[conn.toNodeIdx];
     if (!from || !to) continue;
 
     const mid = from.clone().add(to).multiplyScalar(0.5);
@@ -850,194 +763,341 @@ function updateConnectionBridges() {
 
     conn.bridgeMesh.position.copy(mid);
     conn.bridgeMesh.scale.y = dist;
+    conn.bridgeMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
 
-    // Orient cylinder along the connection
-    const up = new THREE.Vector3(0, 1, 0);
-    const quat = new THREE.Quaternion().setFromUnitVectors(up, dir);
-    conn.bridgeMesh.quaternion.copy(quat);
+    // Signal glow on bridge
+    const hasSignal = signals.some(s => s.conn === conn);
+    conn.bridgeMesh.material.emissiveIntensity = hasSignal ? 2.0 : 0.8;
 
-    // Break connections that are too far apart
-    if (dist > CONNECTION_SNAP_DISTANCE * 2.5) {
+    if (dist > SNAP_DISTANCE * 2.5) {
       removeConnection(conn);
       showToast('Disconnected');
-      return; // modified array, exit
     }
   }
 }
 
 // ===========================================================================
-// TENDRIL EFFECTS (approaching atoms)
+// SIGNAL SYSTEM
+// ===========================================================================
+
+function updateSignalSystem(dt, time) {
+  if (isFrozen) {
+    document.getElementById('signal-indicator').textContent = 'signals: frozen';
+    document.getElementById('signal-indicator').classList.remove('active');
+    return;
+  }
+
+  // PULSE free-running fire
+  for (const atom of atoms) {
+    if (atom.type !== 'pulse') continue;
+    const elapsed = time - atom.group.userData.lastFireTime;
+    const interval = PULSE_FIRE_INTERVAL + Math.sin(atom.group.userData.pulsePhase) * 0.2;
+    if (elapsed >= interval) {
+      firePulse(atom, time);
+      atom.group.userData.lastFireTime = time;
+    }
+  }
+
+  // SENSE detection
+  for (const atom of atoms) {
+    if (atom.type !== 'sense') continue;
+    if (atom.signalCooldown > 0) { atom.signalCooldown -= dt; continue; }
+
+    const sPos = atom.group.position;
+    const sDir = new THREE.Vector3(0, 0, 1).applyQuaternion(atom.group.quaternion);
+    let detected = false;
+
+    for (const other of atoms) {
+      if (other.id === atom.id) continue;
+      if (connections.some(c =>
+        (c.fromAtomId === atom.id && c.toAtomId === other.id) ||
+        (c.fromAtomId === other.id && c.toAtomId === atom.id)
+      )) continue;
+
+      const toOther = other.group.position.clone().sub(sPos);
+      const dist = toOther.length();
+      if (dist > SENSE_DETECTION_RANGE) continue;
+      if (sDir.angleTo(toOther.normalize()) < SENSE_CONE_ANGLE) {
+        detected = true;
+        break;
+      }
+    }
+
+    if (detected) {
+      fireSense(atom, time);
+      atom.signalCooldown = SENSE_COOLDOWN;
+    }
+  }
+
+  // Propagate signals
+  for (let i = signals.length - 1; i >= 0; i--) {
+    const sig = signals[i];
+    sig.progress += dt * SIGNAL_SPEED;
+    if (sig.progress >= 1.0) {
+      deliverSignal(sig, time);
+      if (sig.visual) scene.remove(sig.visual);
+      signals.splice(i, 1);
+    }
+  }
+
+  // Decay charge
+  for (const atom of atoms) {
+    if (atom.signalCharge > 0) {
+      atom.signalCharge = Math.max(0, atom.signalCharge - dt * SIGNAL_CHARGE_DECAY);
+    }
+  }
+
+  // UI
+  const ind = document.getElementById('signal-indicator');
+  if (signals.length > 0) {
+    ind.textContent = `signals: ${signals.length} active`;
+    ind.classList.add('active');
+  } else {
+    ind.textContent = 'signals: listening';
+    ind.classList.remove('active');
+  }
+}
+
+function firePulse(atom, time) {
+  atom.signalCharge = 1.0;
+  if (atom.group.userData.kickRing) atom.group.userData.kickTime = time;
+
+  for (const conn of atom.connections) {
+    const otherId = conn.fromAtomId === atom.id ? conn.toAtomId : conn.fromAtomId;
+    const other = atoms.find(a => a.id === otherId);
+    if (!other) continue;
+
+    // Physical force
+    const pushDir = other.group.position.clone().sub(atom.group.position).normalize();
+    other.velocity.addScaledVector(pushDir, PULSE_FORCE_STRENGTH);
+
+    // Signal
+    emitSignal(atom.id, otherId, conn);
+  }
+}
+
+function fireSense(atom, time) {
+  atom.signalCharge = 1.0;
+  for (const conn of atom.connections) {
+    const otherId = conn.fromAtomId === atom.id ? conn.toAtomId : conn.fromAtomId;
+    emitSignal(atom.id, otherId, conn);
+  }
+}
+
+function emitSignal(fromId, toId, conn) {
+  // Prevent signal spam on same connection
+  if (signals.some(s => s.conn === conn && s.fromAtomId === fromId)) return;
+
+  const sig = { fromAtomId: fromId, toAtomId: toId, conn, progress: 0 };
+
+  const dot = new THREE.Mesh(
+    new THREE.SphereGeometry(SIGNAL_DOT_RADIUS, 8, 8),
+    new THREE.MeshStandardMaterial({
+      color: SIGNAL_DOT_COLOR, emissive: SIGNAL_DOT_COLOR, emissiveIntensity: 2.0,
+    })
+  );
+  scene.add(dot);
+  sig.visual = dot;
+  signals.push(sig);
+}
+
+function deliverSignal(sig, time) {
+  const target = atoms.find(a => a.id === sig.toAtomId);
+  if (!target) return;
+  target.signalCharge = 1.0;
+
+  switch (target.type) {
+    case 'relay': {
+      const mode = target.group.userData.relayMode || 'pass';
+      if (mode === 'block') break;
+      for (const conn of target.connections) {
+        const nextId = conn.fromAtomId === target.id ? conn.toAtomId : conn.fromAtomId;
+        if (nextId === sig.fromAtomId) continue;
+        emitSignal(target.id, nextId, conn);
+      }
+      break;
+    }
+    case 'hold': {
+      target.group.userData.isOn = !target.group.userData.isOn;
+      break;
+    }
+    case 'pulse': {
+      firePulse(target, time);
+      break;
+    }
+    case 'flex': {
+      const mesh = target.group.children[0];
+      if (mesh && mesh.material) {
+        const isElastic = !target.group.userData.isElastic;
+        target.group.userData.isElastic = isElastic;
+        mesh.material.opacity = isElastic ? 0.6 : 1.0;
+        mesh.material.transparent = isElastic;
+        mesh.material.roughness = isElastic ? 0.6 : 0.25;
+        mesh.material.metalness = isElastic ? 0.1 : 0.4;
+      }
+      break;
+    }
+  }
+}
+
+function updateSignalVisuals() {
+  for (const sig of signals) {
+    if (!sig.visual) continue;
+    const fa = atoms.find(a => a.id === sig.fromAtomId);
+    const ta = atoms.find(a => a.id === sig.toAtomId);
+    if (!fa || !ta) continue;
+    sig.visual.position.lerpVectors(fa.group.position, ta.group.position, sig.progress);
+  }
+}
+
+// ===========================================================================
+// TENDRILS
 // ===========================================================================
 
 const tendrilLines = [];
 
 function updateTendrils() {
-  // Remove old tendrils
-  for (const line of tendrilLines) scene.remove(line);
+  for (const l of tendrilLines) scene.remove(l);
   tendrilLines.length = 0;
 
-  // For each pair of unconnected atoms, if close enough, show tendrils
   for (let i = 0; i < atoms.length; i++) {
     for (let j = i + 1; j < atoms.length; j++) {
-      const a = atoms[i];
-      const b = atoms[j];
-
-      // Skip if already connected
-      const connected = connections.some(c =>
+      const a = atoms[i], b = atoms[j];
+      if (connections.some(c =>
         (c.fromAtomId === a.id && c.toAtomId === b.id) ||
         (c.fromAtomId === b.id && c.toAtomId === a.id)
-      );
-      if (connected) continue;
+      )) continue;
 
       const dist = a.group.position.distanceTo(b.group.position);
-      if (dist < CONNECTION_SHOW_DISTANCE && dist > CONNECTION_SNAP_DISTANCE * 0.5) {
-        // Find closest unoccupied node pair
-        const aNodes = getNodePositions(a);
-        const bNodes = getNodePositions(b);
+      if (dist >= SHOW_TENDRIL_DISTANCE || dist <= SNAP_DISTANCE * 0.5) continue;
 
-        let bestDist = Infinity;
-        let bestFrom = null;
-        let bestTo = null;
-
-        for (let ni = 0; ni < aNodes.length; ni++) {
-          if (isNodeOccupied(a.id, ni)) continue;
-          for (let nj = 0; nj < bNodes.length; nj++) {
-            if (isNodeOccupied(b.id, nj)) continue;
-            const d = aNodes[ni].distanceTo(bNodes[nj]);
-            if (d < bestDist) {
-              bestDist = d;
-              bestFrom = aNodes[ni];
-              bestTo = bNodes[nj];
-            }
-          }
+      const aN = getNodePositions(a), bN = getNodePositions(b);
+      let bD = Infinity, bF = null, bT = null;
+      for (let ni = 0; ni < aN.length; ni++) {
+        if (isNodeOccupied(a.id, ni)) continue;
+        for (let nj = 0; nj < bN.length; nj++) {
+          if (isNodeOccupied(b.id, nj)) continue;
+          const d = aN[ni].distanceTo(bN[nj]);
+          if (d < bD) { bD = d; bF = aN[ni]; bT = bN[nj]; }
         }
+      }
 
-        if (bestFrom && bestTo) {
-          const alpha = 1.0 - (bestDist / CONNECTION_SHOW_DISTANCE);
-          const points = [bestFrom, bestTo];
-          const geo = new THREE.BufferGeometry().setFromPoints(points);
-          const mat = new THREE.LineBasicMaterial({
-            color: TENDRIL_COLOR,
-            transparent: true,
-            opacity: alpha * 0.5,
-            linewidth: 1,
-          });
-          const line = new THREE.Line(geo, mat);
-          scene.add(line);
-          tendrilLines.push(line);
-        }
+      if (bF && bT) {
+        const alpha = 1.0 - (bD / SHOW_TENDRIL_DISTANCE);
+        const geo = new THREE.BufferGeometry().setFromPoints([bF, bT]);
+        const mat = new THREE.LineBasicMaterial({ color: TENDRIL_COLOR, transparent: true, opacity: alpha * 0.5 });
+        const line = new THREE.Line(geo, mat);
+        scene.add(line);
+        tendrilLines.push(line);
       }
     }
   }
 }
 
 // ===========================================================================
-// PHYSICS (simple)
+// PHYSICS
 // ===========================================================================
 
 function updatePhysics(dt) {
   if (isFrozen) return;
-
   for (const atom of atoms) {
-    // Skip if being dragged
     if (isDraggingAtom && selectedAtom && selectedAtom.id === atom.id) continue;
 
-    // Apply gravity
     atom.velocity.y += GRAVITY * dt;
-
-    // Damping
     atom.velocity.multiplyScalar(DAMPING);
-
-    // Update position
     atom.group.position.addScaledVector(atom.velocity, dt);
 
-    // Ground collision
-    const groundLevel = GROUND_Y + ATOM_RADIUS;
-    if (atom.group.position.y < groundLevel) {
-      atom.group.position.y = groundLevel;
-      atom.velocity.y = -atom.velocity.y * GROUND_RESTITUTION;
+    const gLevel = GROUND_Y + ATOM_RADIUS;
+    if (atom.group.position.y < gLevel) {
+      atom.group.position.y = gLevel;
+      atom.velocity.y = -atom.velocity.y * GROUND_BOUNCE;
       if (Math.abs(atom.velocity.y) < 0.1) atom.velocity.y = 0;
       atom.grounded = true;
+      atom.velocity.x *= GROUND_FRICTION;
+      atom.velocity.z *= GROUND_FRICTION;
     } else {
       atom.grounded = false;
     }
 
-    // Spring forces from connections
     for (const conn of atom.connections) {
       const otherId = conn.fromAtomId === atom.id ? conn.toAtomId : conn.fromAtomId;
       const other = atoms.find(a => a.id === otherId);
       if (!other) continue;
-
       const diff = other.group.position.clone().sub(atom.group.position);
       const dist = diff.length();
-      const restLength = (atom.type === 'flex' || other.type === 'flex')
-        ? FLEX_LENGTH * 0.7
-        : ATOM_RADIUS * 2.2;
-      const SPRING_K = 50;
-      const force = diff.normalize().multiplyScalar((dist - restLength) * SPRING_K * dt);
-      atom.velocity.add(force);
+      const restLen = (atom.type === 'flex' || other.type === 'flex')
+        ? FLEX_LENGTH * 0.7 : ATOM_RADIUS * REST_LENGTH_FACTOR;
+      atom.velocity.add(diff.normalize().multiplyScalar((dist - restLen) * SPRING_K * dt));
     }
   }
 }
 
 // ===========================================================================
-// ATOM ANIMATIONS (breathing, pulse kicks, etc.)
+// ATOM ANIMATIONS
 // ===========================================================================
 
 function updateAtomAnimations(time) {
   for (const atom of atoms) {
-    // Breathing: gentle scale oscillation
     const breath = 1.0 + Math.sin(time * BREATH_SPEED + atom.breathPhase) * BREATH_AMPLITUDE;
-    if (!isDraggingAtom || !selectedAtom || selectedAtom.id !== atom.id) {
-      // Only apply breathing if not mid-snap animation
-      if (atom.group.scale.x > 0.99) {
-        atom.group.scale.setScalar(breath);
-      }
+    if ((!isDraggingAtom || !selectedAtom || selectedAtom.id !== atom.id) && atom.group.scale.x > 0.99)
+      atom.group.scale.setScalar(breath);
+
+    const charge = atom.signalCharge;
+    if (charge > 0) {
+      const mainMesh = atom.group.children[0];
+      if (mainMesh && mainMesh.material && mainMesh.material.emissiveIntensity !== undefined)
+        mainMesh.material.emissiveIntensity = ATOM_DEFS[atom.type].emissiveIntensity + charge * 1.5;
     }
 
-    // HOLD nucleus glow
     if (atom.type === 'hold' && atom.group.userData.nucleus) {
-      const nucleus = atom.group.userData.nucleus;
-      const isOn = atom.group.userData.isOn;
-      const targetIntensity = isOn ? 1.5 : 0.2;
-      const currentIntensity = nucleus.material.emissiveIntensity;
-      nucleus.material.emissiveIntensity += (targetIntensity - currentIntensity) * 0.1;
-      const targetScale = isOn ? 1.0 : 0.6;
-      const currentScale = nucleus.scale.x;
-      const newScale = currentScale + (targetScale - currentScale) * 0.1;
-      nucleus.scale.setScalar(newScale);
+      const n = atom.group.userData.nucleus;
+      const on = atom.group.userData.isOn;
+      n.material.emissiveIntensity += ((on ? 1.8 : 0.2) - n.material.emissiveIntensity) * 0.15;
+      n.scale.setScalar(n.scale.x + ((on ? 1.0 : 0.5) - n.scale.x) * 0.15);
     }
 
-    // SENSE cone shimmer
-    if (atom.type === 'sense' && atom.group.userData.cone) {
-      const cone = atom.group.userData.cone;
-      const CONE_SHIMMER_SPEED = 2;
-      const CONE_SHIMMER_MIN = 0.08;
-      const CONE_SHIMMER_MAX = 0.18;
-      cone.material.opacity = CONE_SHIMMER_MIN + (CONE_SHIMMER_MAX - CONE_SHIMMER_MIN) *
-        (Math.sin(time * CONE_SHIMMER_SPEED + atom.breathPhase) * 0.5 + 0.5);
+    if (atom.type === 'sense') {
+      if (atom.group.userData.cone)
+        atom.group.userData.cone.material.opacity = 0.08 + charge * 0.25 + Math.sin(time * 2 + atom.breathPhase) * 0.04;
+      if (atom.group.userData.iris)
+        atom.group.userData.iris.scale.setScalar(1.0 + charge * 0.8);
     }
 
-    // RELAY groove glow
-    if (atom.type === 'relay' && atom.group.userData.groove) {
-      const groove = atom.group.userData.groove;
-      const GROOVE_PULSE_SPEED = 3;
-      const GROOVE_MIN_INTENSITY = 0.3;
-      const GROOVE_MAX_INTENSITY = 0.8;
-      groove.material.emissiveIntensity = GROOVE_MIN_INTENSITY +
-        (GROOVE_MAX_INTENSITY - GROOVE_MIN_INTENSITY) *
-        (Math.sin(time * GROOVE_PULSE_SPEED) * 0.5 + 0.5);
-    }
-
-    // Connection node pulse
-    if (atom.group.userData.nodeMeshes) {
-      for (const nm of atom.group.userData.nodeMeshes) {
-        const NODE_PULSE_SPEED = 2.5;
-        const NODE_PULSE_MIN = 0.3;
-        const NODE_PULSE_MAX = 0.8;
-        nm.material.opacity = NODE_PULSE_MIN + (NODE_PULSE_MAX - NODE_PULSE_MIN) *
-          (Math.sin(time * NODE_PULSE_SPEED + atom.breathPhase) * 0.5 + 0.5);
+    if (atom.type === 'pulse' && atom.group.userData.kickRing) {
+      const ring = atom.group.userData.kickRing;
+      const elapsed = time - atom.group.userData.kickTime;
+      if (elapsed < KICK_VIS_DURATION) {
+        const t = elapsed / KICK_VIS_DURATION;
+        ring.material.opacity = (1 - t) * 0.8;
+        ring.scale.setScalar(1 + t * 0.5);
+      } else {
+        ring.material.opacity = 0;
+        ring.scale.setScalar(1);
       }
+    }
+
+    if (atom.type === 'relay') {
+      const mode = atom.group.userData.relayMode || 'pass';
+      const g = atom.group.userData.groove;
+      if (g) {
+        if (mode === 'pass') {
+          g.material.color.setHex(0xccff44); g.material.emissive.setHex(0xaadd22);
+          g.material.emissiveIntensity = 0.4 + charge * 0.8 + Math.sin(time * 3) * 0.15;
+        } else if (mode === 'invert') {
+          g.material.color.setHex(0xff88cc); g.material.emissive.setHex(0xcc4488);
+          g.material.emissiveIntensity = 0.5 + charge * 0.6;
+        } else {
+          g.material.color.setHex(0x666666); g.material.emissive.setHex(0x333333);
+          g.material.emissiveIntensity = 0.2;
+        }
+      }
+      if (atom.group.userData.barrier)
+        atom.group.userData.barrier.material.opacity = mode === 'block' ? 0.8 : 0;
+    }
+
+    if (atom.group.userData.nodeMeshes) {
+      for (const nm of atom.group.userData.nodeMeshes)
+        nm.material.opacity = 0.3 + 0.4 * (Math.sin(time * 2.5 + atom.breathPhase) * 0.5 + 0.5) + charge * 0.3;
     }
   }
 }
@@ -1047,290 +1107,278 @@ function updateAtomAnimations(time) {
 // ===========================================================================
 
 async function init() {
-  // Renderer
   renderer = new THREE.WebGPURenderer({ antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setClearColor(BG_COLOR);
   document.body.insertBefore(renderer.domElement, document.body.firstChild);
-
   await renderer.init();
 
-  // Scene
   scene = new THREE.Scene();
   scene.fog = new THREE.Fog(BG_COLOR, FOG_NEAR, FOG_FAR);
 
-  // Camera
   camera = new THREE.PerspectiveCamera(CAMERA_FOV, window.innerWidth / window.innerHeight, CAMERA_NEAR, CAMERA_FAR);
   camera.position.set(...CAMERA_INITIAL_POS);
 
-  // Controls
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = ORBIT_DAMPING;
   controls.target.set(0, 0, 0);
 
-  // Lighting
   scene.add(new THREE.AmbientLight(0xffffff, AMBIENT_INTENSITY));
+  const dl = new THREE.DirectionalLight(0xffffff, DIR_LIGHT_INTENSITY);
+  dl.position.set(...DIR_LIGHT_POS);
+  scene.add(dl);
+  scene.add(new THREE.HemisphereLight(HEMI_SKY, HEMI_GROUND, HEMI_INTENSITY));
 
-  const dirLight = new THREE.DirectionalLight(0xffffff, DIRECTIONAL_INTENSITY);
-  dirLight.position.set(...DIRECTIONAL_POS);
-  scene.add(dirLight);
-
-  scene.add(new THREE.HemisphereLight(HEMISPHERE_SKY, HEMISPHERE_GROUND, HEMISPHERE_INTENSITY));
-
-  // Ground grid
   const grid = new THREE.GridHelper(GROUND_SIZE, GROUND_DIVISIONS, GROUND_GRID_COLOR, GROUND_GRID_COLOR);
   grid.position.y = GROUND_Y;
   grid.material.opacity = 0.3;
   grid.material.transparent = true;
   scene.add(grid);
 
-  // Ground plane (for raycasting)
-  const groundGeo = new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE);
-  const groundMat = new THREE.MeshStandardMaterial({
-    color: 0x0d0d1a,
-    roughness: 0.9,
-    transparent: true,
-    opacity: 0.5,
-  });
-  const groundMesh = new THREE.Mesh(groundGeo, groundMat);
-  groundMesh.rotation.x = -Math.PI / 2;
-  groundMesh.position.y = GROUND_Y;
-  groundMesh.userData.isGround = true;
-  scene.add(groundMesh);
+  const gm = new THREE.Mesh(
+    new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE),
+    new THREE.MeshStandardMaterial({ color: 0x0d0d1a, roughness: 0.9, transparent: true, opacity: 0.5 })
+  );
+  gm.rotation.x = -Math.PI / 2;
+  gm.position.y = GROUND_Y;
+  gm.userData.isGround = true;
+  scene.add(gm);
 
-  // Build UI
   buildPalette();
+  buildMachinesPanel();
   setupEvents();
-
-  // Start with freeze badge
   updateFreezeUI();
-
   animate();
 }
 
 // ===========================================================================
-// PALETTE UI
+// LEFT PALETTE
 // ===========================================================================
 
 function buildPalette() {
-  const palette = document.getElementById('palette');
-
-  // Atom buttons
+  const pal = document.getElementById('palette');
   for (const [type, def] of Object.entries(ATOM_DEFS)) {
     const btn = document.createElement('div');
-    btn.className = 'atom-btn';
-    btn.dataset.atomType = type;
-    btn.style.setProperty('--atom-color', `#${def.color.toString(16).padStart(6, '0')}`);
+    btn.className = 'atom-btn'; btn.dataset.atomType = type;
+    const hex = '#' + def.color.toString(16).padStart(6, '0');
+    btn.style.setProperty('--atom-color', hex);
     btn.style.setProperty('--atom-rgb', def.rgb);
 
     const dot = document.createElement('div');
-    dot.className = `dot${type === 'flex' ? ' capsule' : ''}`;
-    dot.style.background = `#${def.color.toString(16).padStart(6, '0')}`;
-
-    const label = document.createElement('span');
-    label.className = 'label';
-    label.textContent = def.name;
-
-    const hint = document.createElement('span');
-    hint.className = 'hint';
-    hint.textContent = def.hint;
-
-    btn.appendChild(dot);
-    btn.appendChild(label);
-    btn.appendChild(hint);
-
-    // Drag from palette
-    btn.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      startPaletteDrag(type, e);
-    });
-
-    // Click to select tool
-    btn.addEventListener('click', (e) => {
-      if (isDraggingFromPalette) return;
-      selectAtomType(type);
-    });
-
-    palette.appendChild(btn);
+    dot.className = 'dot' + (type === 'flex' ? ' capsule' : '');
+    dot.style.background = hex;
+    const label = document.createElement('span'); label.className = 'label'; label.textContent = def.name;
+    const hint = document.createElement('span'); hint.className = 'hint'; hint.textContent = def.hint;
+    btn.append(dot, label, hint);
+    btn.addEventListener('mousedown', (e) => { e.preventDefault(); startPaletteDrag(type, e); });
+    pal.appendChild(btn);
   }
 
-  // Separator
-  const sep = document.createElement('div');
-  sep.className = 'tool-sep';
-  palette.appendChild(sep);
+  pal.appendChild(Object.assign(document.createElement('div'), { className: 'tool-sep' }));
 
-  // Select/Move tool
-  const selectBtn = document.createElement('div');
-  selectBtn.className = 'tool-btn';
-  selectBtn.id = 'select-tool-btn';
-  selectBtn.innerHTML = '<span class="icon">⊹</span><span>Select</span><span class="hint" style="margin-left:auto">[V]</span>';
-  selectBtn.addEventListener('click', () => toggleSelectTool());
-  palette.appendChild(selectBtn);
+  const selBtn = document.createElement('div');
+  selBtn.className = 'tool-btn'; selBtn.id = 'select-tool-btn';
+  selBtn.innerHTML = '<span class="icon">&#10023;</span><span>Select</span><span class="hint" style="margin-left:auto">[V]</span>';
+  selBtn.addEventListener('click', () => toggleSelectTool());
+  pal.appendChild(selBtn);
 
-  // Clear all
-  const clearBtn = document.createElement('div');
-  clearBtn.className = 'tool-btn';
-  clearBtn.innerHTML = '<span class="icon">✕</span><span>Clear All</span>';
-  clearBtn.addEventListener('click', () => {
-    for (const conn of [...connections]) removeConnection(conn);
-    for (const atom of [...atoms]) {
-      scene.remove(atom.group);
-    }
-    atoms.length = 0;
-    connections.length = 0;
-    nextAtomId = 0;
-    history.length = 0;
-    updateAtomCount();
-    showToast('Cleared');
+  const clrBtn = document.createElement('div');
+  clrBtn.className = 'tool-btn';
+  clrBtn.innerHTML = '<span class="icon">&#10005;</span><span>Clear All</span>';
+  clrBtn.addEventListener('click', () => {
+    for (const s of [...signals]) { if (s.visual) scene.remove(s.visual); }
+    signals.length = 0;
+    for (const c of [...connections]) removeConnection(c);
+    for (const a of [...atoms]) scene.remove(a.group);
+    atoms.length = 0; connections.length = 0; nextAtomId = 0; undoHistory.length = 0;
+    updateAtomCount(); showToast('Cleared');
   });
-  palette.appendChild(clearBtn);
-}
-
-function selectAtomType(type) {
-  currentTool = null;
-  selectedAtomType = type;
-  updatePaletteUI();
-}
-
-function toggleSelectTool() {
-  if (currentTool === 'select') {
-    currentTool = null;
-  } else {
-    currentTool = 'select';
-    selectedAtomType = null;
-    clearGhost();
-  }
-  updatePaletteUI();
-}
-
-function updatePaletteUI() {
-  document.querySelectorAll('.atom-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.atomType === selectedAtomType && currentTool !== 'select');
-  });
-  const selectBtn = document.getElementById('select-tool-btn');
-  if (selectBtn) {
-    selectBtn.classList.toggle('active', currentTool === 'select');
-  }
-}
-
-function updateFreezeUI() {
-  const btn = document.getElementById('freeze-btn');
-  btn.classList.toggle('frozen', isFrozen);
-  document.getElementById('freeze-label').textContent = isFrozen ? 'Frozen' : 'Live';
+  pal.appendChild(clrBtn);
 }
 
 // ===========================================================================
-// PALETTE DRAG
+// RIGHT PANEL: MACHINES
+// ===========================================================================
+
+function buildMachinesPanel() {
+  const panel = document.getElementById('machines');
+  for (let mi = 0; mi < PREBUILT_MACHINES.length; mi++) {
+    const m = PREBUILT_MACHINES[mi];
+    const card = document.createElement('div');
+    card.className = 'machine-card'; card.dataset.machineIdx = mi;
+
+    const name = document.createElement('div'); name.className = 'machine-name'; name.textContent = m.name;
+    const desc = document.createElement('div'); desc.className = 'machine-desc'; desc.textContent = m.desc;
+    const dots = document.createElement('div'); dots.className = 'machine-atoms';
+    for (const a of m.atoms) {
+      const d = document.createElement('div');
+      d.className = 'ma-dot' + (a.type === 'flex' ? ' capsule' : '');
+      d.style.background = '#' + ATOM_DEFS[a.type].color.toString(16).padStart(6, '0');
+      dots.appendChild(d);
+    }
+    card.append(name, desc, dots);
+    card.addEventListener('mousedown', (e) => { e.preventDefault(); startMachineDrag(mi, e); });
+    panel.appendChild(card);
+  }
+}
+
+// ===========================================================================
+// DRAG HANDLERS
 // ===========================================================================
 
 function startPaletteDrag(type, e) {
-  isDraggingFromPalette = true;
-  dragAtomType = type;
-
+  isDraggingFromPalette = true; dragAtomType = type;
   const ghost = document.getElementById('drag-ghost');
-  const def = ATOM_DEFS[type];
-  ghost.style.background = `#${def.color.toString(16).padStart(6, '0')}`;
-  ghost.style.color = `#${def.color.toString(16).padStart(6, '0')}`;
+  const hex = '#' + ATOM_DEFS[type].color.toString(16).padStart(6, '0');
+  ghost.style.background = hex; ghost.style.color = hex;
   ghost.className = type === 'flex' ? 'capsule' : '';
-  ghost.id = 'drag-ghost';
-  ghost.style.display = 'block';
-  ghost.style.left = e.clientX + 'px';
-  ghost.style.top = e.clientY + 'px';
+  ghost.id = 'drag-ghost'; ghost.style.display = 'block';
+  ghost.style.left = e.clientX + 'px'; ghost.style.top = e.clientY + 'px';
 
-  // Create ghost in 3D scene
   clearGhost();
-  ghostMesh = createAtomGroup(type, true);
-  ghostMesh.visible = false;
-  scene.add(ghostMesh);
+  ghostMesh = createAtomGroup(type, true); ghostMesh.visible = false; scene.add(ghostMesh);
 
   const onMove = (ev) => {
-    ghost.style.left = ev.clientX + 'px';
-    ghost.style.top = ev.clientY + 'px';
-
-    // Update 3D ghost position
-    updateGhostFrom3DRay(ev);
+    ghost.style.left = ev.clientX + 'px'; ghost.style.top = ev.clientY + 'px';
+    updateGhostFromRay(ev);
   };
-
-  const onUp = (ev) => {
+  const onUp = () => {
     ghost.style.display = 'none';
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
-
-    // Place atom if over viewport
-    const rect = renderer.domElement.getBoundingClientRect();
-    if (ev.clientX > rect.left && ev.clientX < rect.right &&
-        ev.clientY > rect.top && ev.clientY < rect.bottom) {
-
-      if (ghostMesh && ghostMesh.visible) {
-        addAtom(dragAtomType, ghostMesh.position.clone());
-      }
-    }
-
-    clearGhost();
-    isDraggingFromPalette = false;
-    dragAtomType = null;
+    if (ghostMesh && ghostMesh.visible) addAtom(dragAtomType, ghostMesh.position.clone());
+    clearGhost(); isDraggingFromPalette = false; dragAtomType = null;
   };
-
   document.addEventListener('mousemove', onMove);
   document.addEventListener('mouseup', onUp);
 }
 
-function updateGhostFrom3DRay(ev) {
-  if (!ghostMesh) return;
+function startMachineDrag(mi, e) {
+  isDraggingMachine = true;
+  const ghost = document.getElementById('drag-ghost');
+  ghost.style.background = '#4fc3f7'; ghost.style.color = '#4fc3f7';
+  ghost.className = ''; ghost.id = 'drag-ghost'; ghost.style.display = 'block';
+  ghost.style.left = e.clientX + 'px'; ghost.style.top = e.clientY + 'px';
 
+  clearGhost();
+  const machine = PREBUILT_MACHINES[mi];
+  ghostMesh = new THREE.Group();
+  for (const a of machine.atoms) {
+    const g = createAtomGroup(a.type, true);
+    g.position.set(a.offset[0], a.offset[1], a.offset[2]);
+    ghostMesh.add(g);
+  }
+  ghostMesh.visible = false; scene.add(ghostMesh);
+
+  const onMove = (ev) => {
+    ghost.style.left = ev.clientX + 'px'; ghost.style.top = ev.clientY + 'px';
+    const rect = renderer.domElement.getBoundingClientRect();
+    mouseNDC.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+    mouseNDC.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(mouseNDC, camera);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const pt = new THREE.Vector3();
+    if (raycaster.ray.intersectPlane(plane, pt)) {
+      pt.y = Math.max(pt.y, GROUND_Y + ATOM_RADIUS);
+      ghostMesh.position.copy(pt); ghostMesh.visible = true;
+    }
+  };
+  const onUp = () => {
+    ghost.style.display = 'none';
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    if (ghostMesh && ghostMesh.visible) spawnMachine(mi, ghostMesh.position.clone());
+    clearGhost(); isDraggingMachine = false;
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function spawnMachine(mi, center) {
+  const machine = PREBUILT_MACHINES[mi];
+  const spawned = [];
+  for (const def of machine.atoms) {
+    const pos = center.clone().add(new THREE.Vector3(def.offset[0], def.offset[1], def.offset[2]));
+    pos.y = Math.max(pos.y, GROUND_Y + ATOM_RADIUS);
+    spawned.push(addAtom(def.type, pos));
+  }
+  for (const [fi, ti] of machine.autoConnect) {
+    const fa = spawned[fi], ta = spawned[ti];
+    if (!fa || !ta) continue;
+    const fN = getNodePositions(fa), tN = getNodePositions(ta);
+    let bD = Infinity, bF = -1, bT = -1;
+    for (let i = 0; i < fN.length; i++) {
+      if (isNodeOccupied(fa.id, i)) continue;
+      for (let j = 0; j < tN.length; j++) {
+        if (isNodeOccupied(ta.id, j)) continue;
+        const d = fN[i].distanceTo(tN[j]);
+        if (d < bD) { bD = d; bF = i; bT = j; }
+      }
+    }
+    if (bF >= 0) formConnection(fa.id, ta.id, bF, bT);
+  }
+  showToast('Spawned: ' + machine.name);
+}
+
+function updateGhostFromRay(ev) {
+  if (!ghostMesh) return;
   const rect = renderer.domElement.getBoundingClientRect();
   mouseNDC.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
   mouseNDC.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
-
   raycaster.setFromCamera(mouseNDC, camera);
-
-  // Intersect with ground plane at Y=0
   const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-  const intersection = new THREE.Vector3();
-  if (raycaster.ray.intersectPlane(plane, intersection)) {
-    ghostMesh.position.copy(intersection);
+  const pt = new THREE.Vector3();
+  if (raycaster.ray.intersectPlane(plane, pt)) {
+    ghostMesh.position.copy(pt);
     ghostMesh.position.y = Math.max(ghostMesh.position.y, GROUND_Y + ATOM_RADIUS);
     ghostMesh.visible = true;
-
-    // Snap to nearby atoms
     snapGhostToNearby(ghostMesh);
   }
 }
 
 function snapGhostToNearby(ghost) {
-  let bestDist = CONNECTION_SNAP_DISTANCE * 1.5;
-  let bestPos = null;
-
+  let bD = SNAP_DISTANCE * 1.5, bP = null;
   for (const atom of atoms) {
-    const dist = ghost.position.distanceTo(atom.group.position);
-    if (dist < bestDist) {
-      // Position adjacent to this atom
+    const d = ghost.position.distanceTo(atom.group.position);
+    if (d < bD) {
       const dir = ghost.position.clone().sub(atom.group.position).normalize();
       if (dir.lengthSq() < 0.001) dir.set(1, 0, 0);
-      const snapDist = atom.type === 'flex' || dragAtomType === 'flex'
-        ? FLEX_LENGTH * 0.5 + ATOM_RADIUS
-        : ATOM_RADIUS * 2.2;
-      bestPos = atom.group.position.clone().add(dir.multiplyScalar(snapDist));
-      bestDist = dist;
+      const sd = (atom.type === 'flex' || dragAtomType === 'flex')
+        ? FLEX_LENGTH * 0.5 + ATOM_RADIUS : ATOM_RADIUS * REST_LENGTH_FACTOR;
+      bP = atom.group.position.clone().add(dir.multiplyScalar(sd));
+      bD = d;
     }
   }
-
-  if (bestPos) {
-    ghost.position.lerp(bestPos, 0.3);
-  }
+  if (bP) ghost.position.lerp(bP, 0.3);
 }
 
-function clearGhost() {
-  if (ghostMesh) {
-    scene.remove(ghostMesh);
-    ghostMesh = null;
-  }
+function clearGhost() { if (ghostMesh) { scene.remove(ghostMesh); ghostMesh = null; } }
+
+// ===========================================================================
+// TOOL STATE
+// ===========================================================================
+
+function selectAtomType(type) { currentTool = null; selectedAtomType = type; updatePaletteUI(); }
+function toggleSelectTool() {
+  if (currentTool === 'select') currentTool = null;
+  else { currentTool = 'select'; selectedAtomType = null; clearGhost(); }
+  updatePaletteUI();
+}
+function updatePaletteUI() {
+  document.querySelectorAll('.atom-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.atomType === selectedAtomType && currentTool !== 'select'));
+  const sb = document.getElementById('select-tool-btn');
+  if (sb) sb.classList.toggle('active', currentTool === 'select');
+}
+function updateFreezeUI() {
+  document.getElementById('freeze-btn').classList.toggle('frozen', isFrozen);
+  document.getElementById('freeze-label').textContent = isFrozen ? 'Frozen' : 'Live';
 }
 
 // ===========================================================================
-// INPUT EVENTS
+// INPUT
 // ===========================================================================
 
 function setupEvents() {
@@ -1344,69 +1392,49 @@ function setupEvents() {
 }
 
 function onMouseMove(e) {
-  const rect = renderer.domElement.getBoundingClientRect();
-  mouseNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-  mouseNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-  mouseScreen.set(e.clientX, e.clientY);
-
+  const r = renderer.domElement.getBoundingClientRect();
+  mouseNDC.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+  mouseNDC.y = -((e.clientY - r.top) / r.height) * 2 + 1;
   raycaster.setFromCamera(mouseNDC, camera);
 
-  // Drag selected atom
   if (isDraggingAtom && selectedAtom) {
-    const intersection = new THREE.Vector3();
-    if (raycaster.ray.intersectPlane(dragPlane, intersection)) {
-      selectedAtom.group.position.copy(intersection.add(dragOffset));
+    const pt = new THREE.Vector3();
+    if (raycaster.ray.intersectPlane(dragPlane, pt)) {
+      selectedAtom.group.position.copy(pt.add(dragOffset));
       selectedAtom.group.position.y = Math.max(selectedAtom.group.position.y, GROUND_Y + ATOM_RADIUS);
-
-      // Check for new connections / break old ones
       checkAndFormConnections(selectedAtom);
     }
     return;
   }
-
-  // Hover highlight
   hoveredAtom = findAtomUnderRay();
 }
 
 function onMouseDown(e) {
-  if (e.button !== 0) return;
-  if (isDraggingFromPalette) return;
-
+  if (e.button !== 0 || isDraggingFromPalette || isDraggingMachine) return;
   if (currentTool === 'select') {
     const atom = findAtomUnderRay();
     if (atom) {
-      selectedAtom = atom;
-      isDraggingAtom = true;
-      controls.enabled = false;
-
-      // Set up drag plane facing camera
+      selectedAtom = atom; isDraggingAtom = true; controls.enabled = false;
       const camDir = camera.getWorldDirection(new THREE.Vector3());
-      dragPlane.setFromNormalAndCoplanarPoint(
-        camDir.negate(),
-        atom.group.position
-      );
-
-      const intersection = new THREE.Vector3();
-      raycaster.ray.intersectPlane(dragPlane, intersection);
-      dragOffset.copy(atom.group.position).sub(intersection);
+      dragPlane.setFromNormalAndCoplanarPoint(camDir.negate(), atom.group.position);
+      const pt = new THREE.Vector3();
+      raycaster.ray.intersectPlane(dragPlane, pt);
+      dragOffset.copy(atom.group.position).sub(pt);
     }
   } else if (selectedAtomType) {
-    // Place atom via click
     const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-    const intersection = new THREE.Vector3();
-    if (raycaster.ray.intersectPlane(plane, intersection)) {
-      intersection.y = Math.max(intersection.y, GROUND_Y + ATOM_RADIUS);
-      addAtom(selectedAtomType, intersection);
+    const pt = new THREE.Vector3();
+    if (raycaster.ray.intersectPlane(plane, pt)) {
+      pt.y = Math.max(pt.y, GROUND_Y + ATOM_RADIUS);
+      addAtom(selectedAtomType, pt);
     }
   }
 }
 
-function onMouseUp(e) {
+function onMouseUp() {
   if (isDraggingAtom && selectedAtom) {
-    // Final connection check
     checkAndFormConnections(selectedAtom);
-    isDraggingAtom = false;
-    controls.enabled = true;
+    isDraggingAtom = false; controls.enabled = true;
   }
 }
 
@@ -1414,75 +1442,36 @@ function onRightClick(e) {
   e.preventDefault();
   raycaster.setFromCamera(mouseNDC, camera);
   const atom = findAtomUnderRay();
-  if (atom) {
-    removeAtom(atom.id);
-    showToast(`Removed ${ATOM_DEFS[atom.type].name}`);
-  }
+  if (atom) { removeAtom(atom.id); showToast('Removed ' + ATOM_DEFS[atom.type].name); }
 }
 
-function onDoubleClick(e) {
+function onDoubleClick() {
   raycaster.setFromCamera(mouseNDC, camera);
   const atom = findAtomUnderRay();
-  if (atom) {
-    // Toggle HOLD state
-    if (atom.type === 'hold') {
-      atom.group.userData.isOn = !atom.group.userData.isOn;
-      showToast(`HOLD: ${atom.group.userData.isOn ? 'ON' : 'OFF'}`);
-    }
-    // Toggle RELAY mode
-    if (atom.type === 'relay') {
-      const modes = ['pass', 'block', 'invert'];
-      const current = atom.group.userData.relayMode || 'pass';
-      const nextIdx = (modes.indexOf(current) + 1) % modes.length;
-      atom.group.userData.relayMode = modes[nextIdx];
-      showToast(`RELAY: ${modes[nextIdx].toUpperCase()}`);
-    }
+  if (!atom) return;
+  if (atom.type === 'hold') {
+    atom.group.userData.isOn = !atom.group.userData.isOn;
+    showToast('HOLD: ' + (atom.group.userData.isOn ? 'ON' : 'OFF'));
+  }
+  if (atom.type === 'relay') {
+    const modes = ['pass', 'block', 'invert'];
+    const cur = atom.group.userData.relayMode || 'pass';
+    const next = modes[(modes.indexOf(cur) + 1) % modes.length];
+    atom.group.userData.relayMode = next;
+    showToast('RELAY: ' + next.toUpperCase());
   }
 }
 
 function onKeyDown(e) {
-  // Space: toggle freeze
-  if (e.code === 'Space') {
-    e.preventDefault();
-    isFrozen = !isFrozen;
-    updateFreezeUI();
-    showToast(isFrozen ? 'Time frozen' : 'Time running');
-  }
-
-  // V: select tool
-  if (e.key === 'v' || e.key === 'V') {
-    toggleSelectTool();
-  }
-
-  // Escape: deselect
-  if (e.key === 'Escape') {
-    currentTool = null;
-    selectedAtomType = null;
-    selectedAtom = null;
-    clearGhost();
-    updatePaletteUI();
-  }
-
-  // 1-5: quick select atoms
-  const quickSelect = { '1': 'pulse', '2': 'sense', '3': 'relay', '4': 'hold', '5': 'flex' };
-  if (quickSelect[e.key]) {
-    selectAtomType(quickSelect[e.key]);
-  }
-
-  // Delete/Backspace: remove hovered
+  if (e.code === 'Space') { e.preventDefault(); isFrozen = !isFrozen; updateFreezeUI(); showToast(isFrozen ? 'Time frozen' : 'Time running'); }
+  if (e.key === 'v' || e.key === 'V') toggleSelectTool();
+  if (e.key === 'Escape') { currentTool = null; selectedAtomType = null; selectedAtom = null; clearGhost(); updatePaletteUI(); }
+  const qk = { '1': 'pulse', '2': 'sense', '3': 'relay', '4': 'hold', '5': 'flex' };
+  if (qk[e.key]) selectAtomType(qk[e.key]);
   if (e.key === 'Delete' || e.key === 'Backspace') {
-    if (hoveredAtom) {
-      removeAtom(hoveredAtom.id);
-      showToast(`Removed ${ATOM_DEFS[hoveredAtom.type].name}`);
-      hoveredAtom = null;
-    }
+    if (hoveredAtom) { removeAtom(hoveredAtom.id); showToast('Removed ' + ATOM_DEFS[hoveredAtom.type].name); hoveredAtom = null; }
   }
-
-  // Ctrl+Z: undo
-  if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
-    e.preventDefault();
-    undo();
-  }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); }
 }
 
 function onResize() {
@@ -1491,41 +1480,23 @@ function onResize() {
   renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
-// ===========================================================================
-// RAYCASTING
-// ===========================================================================
-
 function findAtomUnderRay() {
-  let best = null;
-  let bestDist = RAYCAST_THRESHOLD;
-
-  for (const atom of atoms) {
-    const dist = raycaster.ray.distanceToPoint(atom.group.position);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = atom;
-    }
+  let best = null, bD = RAYCAST_THRESHOLD;
+  for (const a of atoms) {
+    const d = raycaster.ray.distanceToPoint(a.group.position);
+    if (d < bD) { bD = d; best = a; }
   }
   return best;
 }
 
-// ===========================================================================
-// UNDO
-// ===========================================================================
-
 function undo() {
-  if (history.length === 0) return;
-  const last = history.pop();
+  if (!undoHistory.length) return;
+  const last = undoHistory.pop();
   if (last.action === 'add') {
-    // Remove the atom
-    const atom = atoms.find(a => a.id === last.atomId);
-    if (atom) {
-      const connsToRemove = connections.filter(c => c.fromAtomId === atom.id || c.toAtomId === atom.id);
-      for (const conn of connsToRemove) removeConnection(conn);
-      scene.remove(atom.group);
-      const idx = atoms.indexOf(atom);
-      if (idx >= 0) atoms.splice(idx, 1);
-      updateAtomCount();
+    const a = atoms.find(x => x.id === last.atomId);
+    if (a) {
+      for (const c of connections.filter(c => c.fromAtomId === a.id || c.toAtomId === a.id)) removeConnection(c);
+      scene.remove(a.group); atoms.splice(atoms.indexOf(a), 1); updateAtomCount();
     }
   }
 }
@@ -1538,35 +1509,23 @@ let lastTime = performance.now();
 
 function animate() {
   requestAnimationFrame(animate);
-
   const now = performance.now();
   const dt = Math.min((now - lastTime) / 1000, 0.05);
   lastTime = now;
   const time = now / 1000;
 
   controls.update();
-
-  // Physics
   updatePhysics(dt);
-
-  // Connection bridges
+  updateSignalSystem(dt, time);
+  updateSignalVisuals();
   updateConnectionBridges();
-
-  // Tendril effects
   updateTendrils();
-
-  // Atom animations
   updateAtomAnimations(time);
 
-  // Cursor style
-  if (currentTool === 'select') {
-    renderer.domElement.style.cursor = hoveredAtom ? 'grab' : 'crosshair';
-    if (isDraggingAtom) renderer.domElement.style.cursor = 'grabbing';
-  } else if (selectedAtomType) {
-    renderer.domElement.style.cursor = 'copy';
-  } else {
-    renderer.domElement.style.cursor = 'default';
-  }
+  if (currentTool === 'select')
+    renderer.domElement.style.cursor = isDraggingAtom ? 'grabbing' : (hoveredAtom ? 'grab' : 'crosshair');
+  else if (selectedAtomType) renderer.domElement.style.cursor = 'copy';
+  else renderer.domElement.style.cursor = 'default';
 
   renderer.renderAsync(scene, camera);
 }
@@ -1578,7 +1537,7 @@ function animate() {
 init().catch(err => {
   console.error('Init failed:', err);
   document.body.innerHTML = `<div style="color:#e8603c;padding:40px;font-size:16px;font-family:system-ui">
-    WebGPU initialization failed. Use a WebGPU-capable browser (Chrome 113+, Edge 113+).<br>
+    WebGPU initialization failed. Use Chrome 113+ or Edge 113+.<br>
     <span style="color:#666;font-size:13px">${err.message}</span>
   </div>`;
 });
