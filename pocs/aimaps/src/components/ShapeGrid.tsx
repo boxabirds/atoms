@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
-import { WebGPURenderer } from 'three/webgpu';
+import { WebGPURenderer, PMREMGenerator } from 'three/webgpu';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { HistoryEntry, MapKey } from '../lib/types';
@@ -92,7 +92,7 @@ async function initScene(canvas: HTMLCanvasElement): Promise<SceneState> {
   // Studio environment for PBR reflections (metallic surfaces, transmission, etc.)
   // RoomEnvironment provides soft box lights that give metals visible reflections.
   // scene.background stays dark for aesthetics; scene.environment drives shading.
-  const pmrem = new THREE.PMREMGenerator(renderer);
+  const pmrem = new PMREMGenerator(renderer);
   scene.environment = pmrem.fromScene(new RoomEnvironment()).texture;
   scene.environmentIntensity = ENV_INTENSITY;
   pmrem.dispose();

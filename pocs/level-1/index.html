@@ -271,9 +271,9 @@
 <!-- Three.js import map -->
 <script type="importmap">
 { "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.webgpu.js",
-    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.tsl.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.171.0/examples/jsm/"
+    "three": "https://cdn.jsdelivr.net/npm/three@0.173.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.173.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.173.0/examples/jsm/"
 }}
 </script>
 
@@ -1112,26 +1112,59 @@ for (let x = -1; x <= 1; x++) {
 }
 const HULL_DIR_COUNT = HULL_DIRS.length; // 26
 
-function makeSkinGeo(positions) {
-  const geo = new ConvexGeometry(positions);
-  // ConvexGeometry emits position+normal but NOT uv.
-  // MeshStandardMaterial's WebGPU pipeline expects uv in vertex buffer slot 1.
-  // Add a zeroed uv attribute so all three slots are bound at draw time.
-  const count = geo.getAttribute('position').count;
-  geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(count * 2), 2));
+// Max vertices a ConvexGeometry hull can produce for a molecule.
+// Generous upper bound: 30 atoms × 78 sample points × ~6 faces per point.
+const SKIN_MAX_VERTS = 4096;
+
+// Create a pre-allocated BufferGeometry for skin meshes.
+// Fixed attribute layout (position+normal) never changes — avoids WebGPU
+// pipeline cache invalidation. Vertex data updated in-place via setDrawRange.
+function createSkinGeometry() {
+  const geo = new THREE.BufferGeometry();
+  const pos = new THREE.BufferAttribute(new Float32Array(SKIN_MAX_VERTS * 3), 3);
+  const norm = new THREE.BufferAttribute(new Float32Array(SKIN_MAX_VERTS * 3), 3);
+  pos.setUsage(THREE.DynamicDrawUsage);
+  norm.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('position', pos);
+  geo.setAttribute('normal', norm);
+  geo.setDrawRange(0, 0); // invisible until populated
   return geo;
+}
+
+// Write ConvexGeometry output into a pre-allocated skin geometry.
+// Returns true if data fit, false if hull exceeded SKIN_MAX_VERTS.
+function writeSkinData(targetGeo, hullPositions) {
+  const hull = new ConvexGeometry(hullPositions);
+  const hullPos = hull.getAttribute('position');
+  const hullNorm = hull.getAttribute('normal');
+  const count = hullPos.count;
+
+  if (count > SKIN_MAX_VERTS) {
+    hull.dispose();
+    return false;
+  }
+
+  const tPos = targetGeo.getAttribute('position');
+  const tNorm = targetGeo.getAttribute('normal');
+
+  tPos.array.set(hullPos.array.subarray(0, count * 3));
+  tPos.needsUpdate = true;
+
+  tNorm.array.set(hullNorm.array.subarray(0, count * 3));
+  tNorm.needsUpdate = true;
+
+  targetGeo.setDrawRange(0, count);
+  targetGeo.computeBoundingSphere();
+
+  hull.dispose();
+  return true;
 }
 
 function updateSkins() {
   const molecules = findMolecules();
   const newSkinMeshes = [];
-  const usedKeys = new Map(); // key → existing skin entry
-
-  // Index existing skins by key for O(1) lookup
-  for (const skin of skinMeshes) {
-    usedKeys.set(skin.key, skin);
-  }
-
+  const usedKeys = new Map();
+  for (const skin of skinMeshes) usedKeys.set(skin.key, skin);
   const claimed = new Set();
 
   for (const mol of molecules) {
@@ -1172,22 +1205,18 @@ function updateSkins() {
 
     if (positions.length < 4) continue;
 
-    try {
-      const geo = makeSkinGeo(positions);
-      const existing = usedKeys.get(key);
-
-      if (existing && !claimed.has(key)) {
-        // Tear down old mesh entirely, build fresh — avoids WebGPU stale buffer binding
-        scene.remove(existing.mesh);
-        existing.mesh.geometry.dispose();
-        // Reuse tinted material clone
-        const mesh = new THREE.Mesh(geo, existing.mesh.material);
-        mesh.renderOrder = 1;
-        scene.add(mesh);
+    const existing = usedKeys.get(key);
+    if (existing && !claimed.has(key)) {
+      // Reuse mesh — just overwrite vertex data in the pre-allocated buffers
+      if (writeSkinData(existing.mesh.geometry, positions)) {
+        existing.atomIds = mol;
         claimed.add(key);
-        newSkinMeshes.push({ mesh, atomIds: mol, key });
-      } else {
-        // New molecule — full MeshStandardMaterial for lighting support
+        newSkinMeshes.push(existing);
+      }
+    } else {
+      // New molecule — create pre-allocated geometry + material, write first frame
+      const geo = createSkinGeometry();
+      if (writeSkinData(geo, positions)) {
         const skinCol = getSkinColor(mol);
         const mat = new THREE.MeshStandardMaterial({
           color: skinCol.color,
@@ -1204,15 +1233,15 @@ function updateSkins() {
         mesh.renderOrder = 1;
         scene.add(mesh);
         newSkinMeshes.push({ mesh, atomIds: mol, key });
+      } else {
+        geo.dispose();
       }
-    } catch (e) {
-      // ConvexGeometry can fail with coplanar points — skip
     }
   }
 
-  // Remove orphaned skins (molecules that no longer exist)
+  // Remove orphaned skins
   for (const skin of skinMeshes) {
-    if (!claimed.has(skin.key) && !newSkinMeshes.includes(skin)) {
+    if (!claimed.has(skin.key) && !newSkinMeshes.some(s => s === skin)) {
       scene.remove(skin.mesh);
       skin.mesh.geometry.dispose();
       skin.mesh.material.dispose();
@@ -1854,7 +1883,8 @@ let lastTime = performance.now();
 let lastSkinUpdate = 0;
 const SKIN_UPDATE_INTERVAL_MS = 50;  // rebuild hulls at ~20fps, not 60
 
-async function animate() {
+function animate() {
+  requestAnimationFrame(animate);
   const now = performance.now();
   const dt = Math.min((now - lastTime) / 1000, 0.05);
   lastTime = now;
@@ -1877,8 +1907,7 @@ async function animate() {
   else if (selectedAtomType) renderer.domElement.style.cursor = 'copy';
   else renderer.domElement.style.cursor = 'default';
 
-  await renderer.renderAsync(scene, camera);
-  requestAnimationFrame(animate);
+  renderer.renderAsync(scene, camera);
 }
 
 // ===========================================================================
