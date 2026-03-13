@@ -1545,24 +1545,27 @@ function initMetaballPipeline() {
   const fillContrib = vec3(0.753, 0.816, 1.0).mul(fillDot).mul(FILL_INTENSITY).mul(diffuseFactor);
   const rimContrib = vec3(1.0, 1.0, 1.0).mul(rimDot).mul(RIM_INTENSITY).mul(diffuseFactor);
 
-  // Specular tinted by base color for metals
+  // Schlick Fresnel: F = F0 + (1 - F0) * (1 - NdotV)^5
   const DIELECTRIC_F0 = 0.04;
+  const f0 = tintedAlbedo.mul(finalMetalness).add(vec3(DIELECTRIC_F0, DIELECTRIC_F0, DIELECTRIC_F0).mul(float(1.0).sub(finalMetalness)));
+  const NdotV = perturbedNormal.dot(viewDir).clamp(0.0, 1.0);
+  const fresnelTerm = f0.add(vec3(1.0, 1.0, 1.0).sub(f0).mul(float(1.0).sub(NdotV).pow(5.0)));
+
+  // Specular with Fresnel modulation
   const SPEC_INTENSITY = 0.8;
-  const specColor = tintedAlbedo.mul(finalMetalness).add(vec3(DIELECTRIC_F0, DIELECTRIC_F0, DIELECTRIC_F0).mul(float(1.0).sub(finalMetalness)));
-  const specTotal = specColor.mul(keySpec.add(fillSpec).add(rimSpec)).mul(SPEC_INTENSITY);
+  const specTotal = fresnelTerm.mul(keySpec.add(fillSpec).add(rimSpec)).mul(SPEC_INTENSITY);
 
   const ambient = vec3(0.25, 0.25, 0.28);
   const directLight = tintedAlbedo.mul(ambient.add(keyContrib).add(fillContrib).add(rimContrib)).add(specTotal);
 
   // Environment map reflections — equirectangular sampling
   const reflDir = viewDir.negate().reflect(perturbedNormal);
-  // Equirect UV from reflection direction: u = atan2(x, z) / 2π + 0.5, v = asin(y) / π + 0.5
   const envU = reflDir.x.atan2(reflDir.z).div(float(Math.PI * 2)).add(0.5);
   const envV = reflDir.y.asin().div(float(Math.PI)).add(0.5);
   const envSample = texture(envMapTex, vec2(envU, envV));
 
-  // Environment reflection strength: metals reflect environment fully, dielectrics barely
-  const envReflectance = specColor.mul(float(ENV_REFLECTION_STRENGTH));
+  // Environment reflection with Fresnel — edges reflect more (glistening silhouettes)
+  const envReflectance = fresnelTerm.mul(float(ENV_REFLECTION_STRENGTH));
   const envContrib = envSample.rgb.mul(envReflectance);
 
   const litColor = directLight.add(envContrib);
