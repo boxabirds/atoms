@@ -309,9 +309,8 @@
 
 <script type="module">
 import * as THREE from 'three';
-import { triplanarTexture, texture, positionWorld, normalWorld, vec2, vec3, vec4, float, Fn, uniform, screenUV, attribute, modelViewProjection, varying, select } from 'three/tsl';
-import { NodeMaterial } from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 // ===========================================================================
 // CONSTANTS
@@ -389,21 +388,24 @@ const VELOCITY_CAP = 8.0;            // max speed any atom can reach
 // Skin system — screen-space metaballs
 const SKIN_DEFAULT_OPACITY = 0.5;
 const SKIN_MIN_ATOMS = 2;            // minimum atoms in a molecule to get a skin
-const SKIN_TEXTURE_SCALE = 2.0;      // world-space tiling density for triplanar mapping
-const ENV_MAP_SIZE = 256;            // synthetic environment map resolution
-const ENV_REFLECTION_STRENGTH = 0.6; // environment reflection intensity
+const SKIN_SPHERE_SEGMENTS = 32;     // subdivision for skin sphere geometry
+const SKIN_SPHERE_INFLATE = 1.15;    // inflate spheres slightly for better overlap coverage
+const DEFAULT_PNG_DISPLACEMENT_SCALE = 0.3; // displacement scale for PNG skins without explicit scalar
+const DISPLACEMENT_SCALE_MULTIPLIER = 5.0;  // boost all displacement — unit spheres need stronger displacement than aimaps
+const ENV_INTENSITY = 3.0;           // IBL environment map intensity (matches aimaps)
+const TONE_MAP_EXPOSURE = 1.8;       // tone mapping exposure (matches aimaps)
 const SKIN_REGISTRY = [
   { name: 'none', index: 0 },
   { name: 'rusty-and-warped', index: 1, type: 'png', path: './skins/rusty-and-warped/' },
   { name: 'lumpy-translucent-gold', index: 2, type: 'json', path: './skins-json/lumpy-translucent-gold.shader.json' },
+  { name: 'aquamarine-glass', index: 3, type: 'json', path: './skins-json/aquamarine-glass.json' },
+  { name: 'flickering-flame', index: 4, type: 'json', path: './skins-json/flickering-flame.shader.json' },
+  { name: 'rainbow-marshmallow', index: 5, type: 'json', path: './skins-json/rainbow-marshmallow.shader.json' },
+  { name: 'william-slime', index: 6, type: 'json', path: './skins-json/william slime.json' },
+  { name: 'xmas-decorations', index: 7, type: 'json', path: './skins-json/xmas decorations.json' },
 ];
 const SKIN_INDEX = Object.fromEntries(SKIN_REGISTRY.map(s => [s.name, s.index]));
 const AVAILABLE_SKINS = SKIN_REGISTRY.map(s => s.name);
-const META_MAX_ATOMS = 1024;         // max atoms in density pass (WebGPU uniform buffer limit: 1024 × 64B = 65536B)
-const META_BILLBOARD_SCALE = 4.0;    // billboard radius multiplier over atom radius (covers falloff)
-const META_FALLOFF_RADIUS_SQ = 1.0;  // squared falloff radius for polynomial kernel
-const META_DENSITY_THRESHOLD = 0.2;  // iso-surface threshold in composite (lower = skin extends further)
-const META_NORMAL_EPSILON = 0.003;   // screen-space epsilon for density gradient normals
 
 const RAYCAST_THRESHOLD = 0.4;
 
@@ -554,16 +556,10 @@ let dragAtomType = null;
 let isDraggingMachine = false;
 let hoveredAtom = null;
 
-// Skin system — metaball state
-const moleculeSkins = new Map();  // molKey → { atomIds, skinType, key }
+// Skin system — real geometry per atom
+const moleculeSkins = new Map();  // molKey → { atomIds, skinType, key, material, meshes[] }
 let skinOpacity = SKIN_DEFAULT_OPACITY;
-const skinTextureCache = new Map(); // name → { albedo, normal, roughness, metalness } THREE.Texture
-let densityMesh, densityScene, densityRT, compositeQuad, compositeScene, compositeCamera;
-let worldPosMesh, worldPosScene, worldPosRT;
-let skinOpacityUniform, densityThresholdUniform;
-let debugPipeline = false;
-let debugCompositeMat = null;
-let normalCompositeMat = null;
+const skinTextureCache = new Map(); // name → { albedo, normal, roughness, metalness, scalars } THREE.Texture
 
 // ===========================================================================
 // UTILITIES
@@ -1201,6 +1197,10 @@ async function loadSkinTextureSet(name) {
     });
   });
   await Promise.all(promises);
+  // Stash displacement URL and default scale for CPU displacement
+  textures._displacementDataUrl = `${basePath}displacement-${name}.png`;
+  if (!textures.scalars) textures.scalars = {};
+  if (textures.scalars.displacementScale == null) textures.scalars.displacementScale = DEFAULT_PNG_DISPLACEMENT_SCALE;
   skinTextureCache.set(name, textures);
 }
 
@@ -1219,7 +1219,8 @@ async function loadSkinFromJSON(name, url) {
       img.onload = () => {
         const tex = new THREE.Texture(img);
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-        tex.colorSpace = mapType === 'albedo' ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
+        const isSRGB = mapType === 'albedo' || mapType === 'emissive';
+        tex.colorSpace = isSRGB ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
         tex.needsUpdate = true;
         textures[mapType] = tex;
         resolve();
@@ -1229,585 +1230,291 @@ async function loadSkinFromJSON(name, url) {
     });
   });
   await Promise.all(promises);
+
+  // Stash displacement data URL for CPU displacement (not a THREE.Texture — raw pixels needed)
+  const dispMap = json.maps?.displacement;
+  if (dispMap) textures._displacementDataUrl = dispMap;
+
   skinTextureCache.set(name, textures);
 }
 
 // ---------------------------------------------------------------------------
-// SYNTHETIC ENVIRONMENT MAP — studio-style HDR for reflections
+// CPU DISPLACEMENT — ported from aimaps/src/lib/cpu-displacement.ts
 // ---------------------------------------------------------------------------
 
-function createEnvMapTexture() {
-  const w = ENV_MAP_SIZE, h = ENV_MAP_SIZE / 2;
-  const data = new Float32Array(w * h * 4);
+const DISP_HASH_PRECISION = 4;   // decimal places for seam vertex grouping
+const DISP_RGBA = 4;             // stride in pixel data
+const DISP_BYTE_MAX = 255;
 
-  // HDR studio environment — values > 1.0 produce real specular highlights
-  const HDR_SKY_TOP = [0.10, 0.10, 0.18];
-  const HDR_SKY_MID = [0.18, 0.18, 0.27];
-  const HDR_HORIZON = [0.23, 0.23, 0.31];
-  const HDR_GROUND = [0.10, 0.10, 0.10];
-  const HDR_GROUND_DARK = [0.04, 0.04, 0.04];
+/** Decode a data-URL displacement image into raw pixel data */
+function loadDisplacementPixels(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const { data, width, height } = ctx.getImageData(0, 0, img.width, img.height);
+      resolve({ pixels: data, width, height });
+    };
+    img.onerror = () => reject(new Error('Failed to load displacement image'));
+    img.src = dataUrl;
+  });
+}
 
-  // Fill with sky-to-ground gradient
-  for (let y = 0; y < h; y++) {
-    const v = y / (h - 1); // 0=top, 1=bottom
-    let r, g, b;
-    if (v < 0.35) {
-      const t = v / 0.35;
-      r = HDR_SKY_TOP[0] + (HDR_SKY_MID[0] - HDR_SKY_TOP[0]) * t;
-      g = HDR_SKY_TOP[1] + (HDR_SKY_MID[1] - HDR_SKY_TOP[1]) * t;
-      b = HDR_SKY_TOP[2] + (HDR_SKY_MID[2] - HDR_SKY_TOP[2]) * t;
-    } else if (v < 0.5) {
-      const t = (v - 0.35) / 0.15;
-      r = HDR_SKY_MID[0] + (HDR_HORIZON[0] - HDR_SKY_MID[0]) * t;
-      g = HDR_SKY_MID[1] + (HDR_HORIZON[1] - HDR_SKY_MID[1]) * t;
-      b = HDR_SKY_MID[2] + (HDR_HORIZON[2] - HDR_SKY_MID[2]) * t;
-    } else if (v < 0.65) {
-      const t = (v - 0.5) / 0.15;
-      r = HDR_HORIZON[0] + (HDR_GROUND[0] - HDR_HORIZON[0]) * t;
-      g = HDR_HORIZON[1] + (HDR_GROUND[1] - HDR_HORIZON[1]) * t;
-      b = HDR_HORIZON[2] + (HDR_GROUND[2] - HDR_HORIZON[2]) * t;
-    } else {
-      const t = (v - 0.65) / 0.35;
-      r = HDR_GROUND[0] + (HDR_GROUND_DARK[0] - HDR_GROUND[0]) * t;
-      g = HDR_GROUND[1] + (HDR_GROUND_DARK[1] - HDR_GROUND[1]) * t;
-      b = HDR_GROUND[2] + (HDR_GROUND_DARK[2] - HDR_GROUND[2]) * t;
-    }
-    for (let x = 0; x < w; x++) {
-      const idx = (y * w + x) * 4;
-      data[idx] = r;
-      data[idx + 1] = g;
-      data[idx + 2] = b;
-      data[idx + 3] = 1.0;
-    }
+/** Sample displacement (0–1) at UV with bilinear interpolation and wrapping */
+function sampleDisplacement(data, u, v) {
+  u = ((u % 1) + 1) % 1;
+  v = ((v % 1) + 1) % 1;
+  const px = u * (data.width - 1);
+  const py = (1 - v) * (data.height - 1);
+  const x0 = Math.floor(px), y0 = Math.floor(py);
+  const x1 = Math.min(x0 + 1, data.width - 1);
+  const y1 = Math.min(y0 + 1, data.height - 1);
+  const fx = px - x0, fy = py - y0;
+  const v00 = data.pixels[(y0 * data.width + x0) * DISP_RGBA] / DISP_BYTE_MAX;
+  const v10 = data.pixels[(y0 * data.width + x1) * DISP_RGBA] / DISP_BYTE_MAX;
+  const v01 = data.pixels[(y1 * data.width + x0) * DISP_RGBA] / DISP_BYTE_MAX;
+  const v11 = data.pixels[(y1 * data.width + x1) * DISP_RGBA] / DISP_BYTE_MAX;
+  return v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) + v01 * (1 - fx) * fy + v11 * fx * fy;
+}
+
+/** Group vertex indices by coincident position (seam vertices) */
+function buildSeamGroups(positions) {
+  const count = positions.length / 3;
+  const map = new Map();
+  for (let i = 0; i < count; i++) {
+    const i3 = i * 3;
+    const key = `${positions[i3].toFixed(DISP_HASH_PRECISION)},${positions[i3+1].toFixed(DISP_HASH_PRECISION)},${positions[i3+2].toFixed(DISP_HASH_PRECISION)}`;
+    let group = map.get(key);
+    if (!group) { group = []; map.set(key, group); }
+    group.push(i);
   }
+  return [...map.values()].filter(g => g.length > 1);
+}
 
-  // HDR light spots — values 3.0-8.0 for real specular hotspots
-  function addHDRLight(cx, cy, radius, intensity, lr, lg, lb) {
-    const rSq = radius * radius;
-    const x0 = Math.max(0, Math.floor(cx - radius));
-    const x1 = Math.min(w - 1, Math.ceil(cx + radius));
-    const y0 = Math.max(0, Math.floor(cy - radius));
-    const y1 = Math.min(h - 1, Math.ceil(cy + radius));
-    for (let y = y0; y <= y1; y++) {
-      for (let x = x0; x <= x1; x++) {
-        const dx = x - cx, dy = y - cy;
-        const distSq = dx * dx + dy * dy;
-        if (distSq > rSq) continue;
-        const t = 1.0 - Math.sqrt(distSq) / radius;
-        const falloff = t * t; // quadratic falloff
-        const idx = (y * w + x) * 4;
-        data[idx] += lr * intensity * falloff;
-        data[idx + 1] += lg * intensity * falloff;
-        data[idx + 2] += lb * intensity * falloff;
-      }
-    }
+/** Displace vertices along normals, then average at seam vertices to prevent tearing */
+function displaceVertices(positions, originalPositions, normals, uvs, seamGroups, data, scale) {
+  const vertexCount = positions.length / 3;
+  for (let i = 0; i < vertexCount; i++) {
+    const d = sampleDisplacement(data, uvs[i * 2], uvs[i * 2 + 1]) * scale;
+    const i3 = i * 3;
+    positions[i3]     = originalPositions[i3]     + normals[i3]     * d;
+    positions[i3 + 1] = originalPositions[i3 + 1] + normals[i3 + 1] * d;
+    positions[i3 + 2] = originalPositions[i3 + 2] + normals[i3 + 2] * d;
   }
+  // Force coincident seam vertices to their average displaced position
+  for (const group of seamGroups) {
+    let ax = 0, ay = 0, az = 0;
+    for (const idx of group) { const i3 = idx * 3; ax += positions[i3]; ay += positions[i3+1]; az += positions[i3+2]; }
+    ax /= group.length; ay /= group.length; az /= group.length;
+    for (const idx of group) { const i3 = idx * 3; positions[i3] = ax; positions[i3+1] = ay; positions[i3+2] = az; }
+  }
+}
 
-  // Key light — warm, bright, upper-right (HDR intensity 8.0)
-  addHDRLight(w * 0.7, h * 0.2, w * 0.15, 8.0, 1.0, 0.96, 0.86);
-  // Fill light — cool, softer, upper-left
-  addHDRLight(w * 0.2, h * 0.25, w * 0.12, 4.0, 0.78, 0.82, 1.0);
-  // Rim light — white, behind (very bright for silhouette highlights)
-  addHDRLight(w * 0.5, h * 0.1, w * 0.1, 6.0, 1.0, 1.0, 1.0);
-  // Ground bounce — warm, below
-  addHDRLight(w * 0.5, h * 0.75, w * 0.25, 2.0, 0.71, 0.63, 0.55);
-  // Secondary highlight — adds asymmetry
-  addHDRLight(w * 0.85, h * 0.35, w * 0.08, 5.0, 1.0, 0.90, 0.78);
-  // Extra specular hotspot — small and intense for sharp reflections
-  addHDRLight(w * 0.65, h * 0.15, w * 0.04, 12.0, 1.0, 0.98, 0.94);
-
-  const tex = new THREE.DataTexture(data, w, h, THREE.RGBAFormat, THREE.FloatType);
-  tex.mapping = THREE.EquirectangularReflectionMapping;
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.needsUpdate = true;
-  return tex;
+/** Average vertex normals at seam positions to prevent lighting discontinuities */
+function averageSeamNormals(normals, seamGroups) {
+  for (const group of seamGroups) {
+    let nx = 0, ny = 0, nz = 0;
+    for (const idx of group) { const i3 = idx * 3; nx += normals[i3]; ny += normals[i3+1]; nz += normals[i3+2]; }
+    const len = Math.sqrt(nx*nx + ny*ny + nz*nz);
+    if (len > 0) { nx /= len; ny /= len; nz /= len; }
+    for (const idx of group) { const i3 = idx * 3; normals[i3] = nx; normals[i3+1] = ny; normals[i3+2] = nz; }
+  }
 }
 
 // ---------------------------------------------------------------------------
-// METABALL DENSITY PASS — instanced camera-facing billboards
+// SKIN GEOMETRY SYSTEM — real spheres per atom with MeshPhysicalMaterial
 // ---------------------------------------------------------------------------
 
-// Instance attribute arrays (pre-allocated, updated each frame)
-const metaPositionArray = new Float32Array(META_MAX_ATOMS * 3);
-const metaRadiusArray = new Float32Array(META_MAX_ATOMS);
-const metaColorArray = new Float32Array(META_MAX_ATOMS * 4); // RGBA: rgb = color, a = skin type index (0=none, 1=rusty, 2=lumpy-gold)
+// Shared sphere geometry for all skin meshes (unit radius, scaled per atom)
+const skinSphereGeom = new THREE.SphereGeometry(1, SKIN_SPHERE_SEGMENTS, SKIN_SPHERE_SEGMENTS);
 
-function initMetaballPipeline() {
-  // --- Shared billboard geometry with instanced attributes ---
-  const billboardGeo = new THREE.PlaneGeometry(1, 1);
+// Pre-compute pristine geometry data for CPU displacement
+const skinSphereOrigPos = new Float32Array(skinSphereGeom.getAttribute('position').array);
+const skinSphereOrigNorm = new Float32Array(skinSphereGeom.getAttribute('normal').array);
+const skinSphereUVs = skinSphereGeom.getAttribute('uv').array;
+const skinSphereSeamGroups = buildSeamGroups(skinSphereOrigPos);
 
-  const instPos = new THREE.InstancedBufferAttribute(metaPositionArray, 3);
-  instPos.setUsage(THREE.DynamicDrawUsage);
-  billboardGeo.setAttribute('instPos', instPos);
+// Cache: skinType → { geometry, displacementData }
+const displacedGeometryCache = new Map();
 
-  const instRadius = new THREE.InstancedBufferAttribute(metaRadiusArray, 1);
-  instRadius.setUsage(THREE.DynamicDrawUsage);
-  billboardGeo.setAttribute('instRadius', instRadius);
+/** Decode and cache displacement pixel data for a skin type */
+async function ensureDisplacementData(skinType) {
+  if (displacedGeometryCache.has(skinType)) return displacedGeometryCache.get(skinType);
+  const textures = skinTextureCache.get(skinType);
+  if (!textures) return null;
+  const rawScale = textures.scalars?.displacementScale ?? 0;
+  if (rawScale === 0) return null;
+  const scale = rawScale * DISPLACEMENT_SCALE_MULTIPLIER;
 
-  const instColor = new THREE.InstancedBufferAttribute(metaColorArray, 4);
-  instColor.setUsage(THREE.DynamicDrawUsage);
-  billboardGeo.setAttribute('instColor', instColor);
+  // Find the displacement data URL — stored during loadSkinFromJSON
+  const dispDataUrl = textures._displacementDataUrl;
+  if (!dispDataUrl) return null;
 
-  // ---- Density material (pass 2) ----
-  const densityMat = new NodeMaterial();
-  densityMat.transparent = true;
-  densityMat.blending = THREE.CustomBlending;
-  densityMat.blendSrc = THREE.OneFactor;
-  densityMat.blendDst = THREE.OneFactor; // additive
-  densityMat.depthWrite = false;
-  densityMat.depthTest = false;
-  densityMat.side = THREE.DoubleSide;
+  const pixelData = await loadDisplacementPixels(dispDataUrl);
+  const geom = skinSphereGeom.clone();
+  const positions = geom.getAttribute('position').array;
+  const normals = new Float32Array(skinSphereOrigNorm);
 
-  // Vertex: camera-facing billboard
-  const iPos = attribute('instPos');
-  const iRad = attribute('instRadius');
-  const iCol = attribute('instColor');
+  displaceVertices(positions, skinSphereOrigPos, normals, skinSphereUVs, skinSphereSeamGroups, pixelData, scale);
+  geom.getAttribute('position').needsUpdate = true;
 
-  const billboardSize = iRad.mul(float(META_BILLBOARD_SCALE));
+  geom.computeVertexNormals();
+  const newNormals = geom.getAttribute('normal').array;
+  averageSeamNormals(newNormals, skinSphereSeamGroups);
+  geom.getAttribute('normal').needsUpdate = true;
 
-  const vm = uniform(new THREE.Matrix4());
-  const camRight = vec3(vm.element(0).x, vm.element(1).x, vm.element(2).x);
-  const camUp = vec3(vm.element(0).y, vm.element(1).y, vm.element(2).y);
+  geom.computeBoundingSphere();
+  geom.computeBoundingBox();
 
-  const localPos = attribute('position'); // -0.5..0.5 from PlaneGeometry
+  const entry = { geometry: geom, pixelData };
+  displacedGeometryCache.set(skinType, entry);
+  return entry;
+}
 
-  const worldPos = iPos
-    .add(camRight.mul(localPos.x).mul(billboardSize))
-    .add(camUp.mul(localPos.y).mul(billboardSize));
+/** Get the geometry for a skin type — displaced if available, else pristine sphere */
+function getSkinGeometry(skinType) {
+  const cached = displacedGeometryCache.get(skinType);
+  return cached ? cached.geometry : skinSphereGeom;
+}
 
-  densityMat.positionNode = worldPos;
-
-  // Fragment: polynomial falloff from billboard center
-  const uvAttr = attribute('uv');
-  const centeredUV = uvAttr.sub(vec2(0.5, 0.5)).mul(2.0); // -1..1
-  const dist2 = centeredUV.x.mul(centeredUV.x).add(centeredUV.y.mul(centeredUV.y));
-  const falloff = float(1.0).sub(dist2).max(0.0);
-  const density = falloff.mul(falloff); // (1 - r²)²
-
-  const flatCol = iCol.xyz;
-
-  // Output: r=density, gba=color*density (density-weighted color accumulation)
-  densityMat.colorNode = vec4(
-    density,
-    flatCol.x.mul(density),
-    flatCol.y.mul(density),
-    flatCol.z.mul(density)
-  );
-
-  densityMat.userData = { viewMatrixUniform: vm };
-
-  densityMesh = new THREE.InstancedMesh(billboardGeo, densityMat, META_MAX_ATOMS);
-  densityMesh.count = 0;
-  densityMesh.frustumCulled = false;
-
-  densityScene = new THREE.Scene();
-  densityScene.add(densityMesh);
-
-  // ---- WorldPos material (pass 3) ----
-  // Same billboard geometry (shared instanced attributes), different fragment output.
-  // TSL attribute/uniform nodes are per-material — must redefine them.
-  const worldPosMat = new NodeMaterial();
-  worldPosMat.transparent = true;
-  worldPosMat.blending = THREE.CustomBlending;
-  worldPosMat.blendSrc = THREE.OneFactor;
-  worldPosMat.blendDst = THREE.OneFactor; // additive
-  worldPosMat.depthWrite = false;
-  worldPosMat.depthTest = false;
-  worldPosMat.side = THREE.DoubleSide;
-
-  const wp_iPos = attribute('instPos');
-  const wp_iRad = attribute('instRadius');
-  const wp_iCol = attribute('instColor');
-  const wp_billboardSize = wp_iRad.mul(float(META_BILLBOARD_SCALE));
-
-  const wp_vm = uniform(new THREE.Matrix4());
-  const wp_camRight = vec3(wp_vm.element(0).x, wp_vm.element(1).x, wp_vm.element(2).x);
-  const wp_camUp = vec3(wp_vm.element(0).y, wp_vm.element(1).y, wp_vm.element(2).y);
-
-  const wp_localPos = attribute('position');
-  const wp_worldPos = wp_iPos
-    .add(wp_camRight.mul(wp_localPos.x).mul(wp_billboardSize))
-    .add(wp_camUp.mul(wp_localPos.y).mul(wp_billboardSize));
-
-  worldPosMat.positionNode = wp_worldPos;
-
-  // Pass world position to fragment via varying
-  const vWorldPos = varying(wp_worldPos, 'v_wp');
-
-  // Same density computation for weighting
-  const wp_uvAttr = attribute('uv');
-  const wp_centeredUV = wp_uvAttr.sub(vec2(0.5, 0.5)).mul(2.0);
-  const wp_dist2 = wp_centeredUV.x.mul(wp_centeredUV.x).add(wp_centeredUV.y.mul(wp_centeredUV.y));
-  const wp_falloff = float(1.0).sub(wp_dist2).max(0.0);
-  const wp_density = wp_falloff.mul(wp_falloff);
-
-  // Output: RGB = worldPos × density, A = skinTypeIndex × density
-  worldPosMat.colorNode = vec4(
-    vWorldPos.x.mul(wp_density),
-    vWorldPos.y.mul(wp_density),
-    vWorldPos.z.mul(wp_density),
-    wp_iCol.w.mul(wp_density)
-  );
-
-  worldPosMat.userData = { viewMatrixUniform: wp_vm };
-
-  worldPosMesh = new THREE.InstancedMesh(billboardGeo, worldPosMat, META_MAX_ATOMS);
-  worldPosMesh.count = 0;
-  worldPosMesh.frustumCulled = false;
-
-  worldPosScene = new THREE.Scene();
-  worldPosScene.add(worldPosMesh);
-
-  // ---- Render targets ----
-  skinOpacityUniform = uniform(float(SKIN_DEFAULT_OPACITY));
-  densityThresholdUniform = uniform(float(META_DENSITY_THRESHOLD));
-
-  const w = window.innerWidth, h = window.innerHeight;
-  densityRT = new THREE.RenderTarget(w, h, {
-    type: THREE.HalfFloatType,
-    magFilter: THREE.LinearFilter,
-    minFilter: THREE.LinearFilter
-  });
-  worldPosRT = new THREE.RenderTarget(w, h, {
-    type: THREE.HalfFloatType,
-    magFilter: THREE.LinearFilter,
-    minFilter: THREE.LinearFilter
+function createSkinMaterial(skinType, moleculeColor) {
+  const mat = new THREE.MeshPhysicalMaterial({
+    color: moleculeColor,
+    roughness: 0.5,
+    metalness: 0.0,
+    side: THREE.FrontSide,
+    transparent: true,
+    opacity: skinOpacity,
   });
 
-  // ---- Texture loading for all skins ----
-  function makeFallbackTex(r, g, b, a) {
-    const t = new THREE.DataTexture(new Uint8Array([r, g, b, a]), 1, 1, THREE.RGBAFormat);
-    t.wrapS = t.wrapT = THREE.RepeatWrapping;
-    t.needsUpdate = true;
-    return t;
-  }
-  const fallbackAlbedo = makeFallbackTex(128, 128, 128, 255);
-  const fallbackNormal = makeFallbackTex(128, 128, 255, 255);   // flat normal
-  const fallbackRoughness = makeFallbackTex(128, 128, 128, 255); // 0.5 roughness
-  const fallbackMetalness = makeFallbackTex(0, 0, 0, 255);       // non-metallic
+  if (skinType === 'none') return mat;
 
-  function getSkinTex(skinName, mapType, fallback) {
-    const cached = skinTextureCache.get(skinName);
-    const tex = cached?.[mapType];
-    if (tex) { tex.needsUpdate = true; renderer.initTexture(tex); return tex; }
-    return fallback;
-  }
+  const textures = skinTextureCache.get(skinType);
+  if (!textures) return mat;
 
-  const rustyAlbedo = getSkinTex('rusty-and-warped', 'albedo', fallbackAlbedo);
-  const rustyNormal = getSkinTex('rusty-and-warped', 'normal', fallbackNormal);
-  const rustyRoughness = getSkinTex('rusty-and-warped', 'roughness', fallbackRoughness);
-  const rustyMetalness = getSkinTex('rusty-and-warped', 'metalness', fallbackMetalness);
-
-  const goldAlbedo = getSkinTex('lumpy-translucent-gold', 'albedo', fallbackAlbedo);
-  const goldNormal = getSkinTex('lumpy-translucent-gold', 'normal', fallbackNormal);
-  // JSON skins use scalar PBR values instead of texture maps
-  const goldScalars = skinTextureCache.get('lumpy-translucent-gold')?.scalars || {};
-  const GOLD_ROUGHNESS = goldScalars.roughness ?? 0.5;
-  const GOLD_METALNESS = goldScalars.metalness ?? 0.0;
-  const GOLD_EMISSIVE_INTENSITY = goldScalars.emissiveIntensity ?? 0.0;
-
-  // ---- Environment map for reflections ----
-  const envMapTex = createEnvMapTexture();
-  renderer.initTexture(envMapTex);
-
-  // ---- Composite shader (pass 4) — triplanar PBR ----
-  const compositeMat = new NodeMaterial();
-  compositeMat.transparent = true;
-  compositeMat.depthTest = false;
-  compositeMat.depthWrite = false;
-
-  const rawUV = attribute('uv');
-  const uvNode = vec2(rawUV.x, float(1.0).sub(rawUV.y)); // Y-flip: RT vs screen convention in WebGPU
-  const densityColor = texture(densityRT.texture, uvNode);
-  const wpColor = texture(worldPosRT.texture, uvNode);
-
-  // Density-weighted color reconstruction
-  const d = densityColor.r;
-  const rawColor = vec3(densityColor.g, densityColor.b, densityColor.a);
-  const skinBaseColor = rawColor.div(d.max(0.001));
-
-  // Reconstruct world position and skin type from worldPosRT
-  const wp = vec3(wpColor.r, wpColor.g, wpColor.b).div(d.max(0.001));
-  const skinId = wpColor.a.div(d.max(0.001)).round();
-
-  // Pseudo-normal from density gradient
-  // Apply nonlinear "dome" transform before differentiating: sqrt(clamp(1 - d/peak))
-  // This converts the flat density plateau into a hemisphere shape with real curvature
-  const DENSITY_DOME_SHARPNESS = 1.5;   // exponential falloff rate (higher = tighter dome)
-  const NORMAL_GRAD_EPSILON = 0.008;    // screen-space sampling offset (wider = smoother normals)
-  const NORMAL_Z_SCALE = 0.12;          // Z bias — lower = more curvature, stronger 3D effect
-  const eps = float(NORMAL_GRAD_EPSILON);
-
-  // Dome function: maps density → hemisphere height using exponential decay
-  // 1 - exp(-sharpness * d) gives smooth dome: zero at edge (d=0), asymptotes to 1 at center
-  // Unlike clamp+sqrt, this preserves gradient information at ALL density levels
-  function domeFunc(rawD) {
-    return float(1.0).sub(rawD.mul(float(-DENSITY_DOME_SHARPNESS)).exp());
+  // Apply scalar PBR from JSON skins
+  if (textures.scalars) {
+    const s = textures.scalars;
+    const isMetallic = (s.metalness ?? 0) > 0.5;
+    mat.roughness = s.roughness ?? 0.5;
+    mat.metalness = s.metalness ?? 0.0;
+    if (s.transmission > 0) {
+      mat.transmission = s.transmission;
+      mat.side = THREE.DoubleSide;
+    }
+    if (s.thickness > 0) mat.thickness = s.thickness;
+    if (s.ior) mat.ior = s.ior;
+    if (s.emissiveIntensity > 0) {
+      mat.emissiveIntensity = s.emissiveIntensity;
+      mat.emissive.set(s.emissiveColor || moleculeColor);
+    }
+    // baseColor overrides molecule color (e.g. aquamarine-glass → '#0fc2bf')
+    if (s.baseColor) {
+      mat.color.setStyle(s.baseColor);
+    }
   }
 
-  const dCenter = domeFunc(d);
-  const dLeft = domeFunc(texture(densityRT.texture, uvNode.sub(vec2(eps, 0.0))).r);
-  const dRight = domeFunc(texture(densityRT.texture, uvNode.add(vec2(eps, 0.0))).r);
-  const dDown = domeFunc(texture(densityRT.texture, uvNode.sub(vec2(0.0, eps))).r);
-  const dUp = domeFunc(texture(densityRT.texture, uvNode.add(vec2(0.0, eps))).r);
-  const gradX = dRight.sub(dLeft);
-  const gradY = dUp.sub(dDown);
-  // Normal: XY from dome gradient (curvature), Z from dome height (front-facing at center)
-  const pseudoNormal = vec3(gradX.negate(), gradY, dCenter.mul(float(NORMAL_Z_SCALE))).normalize();
-
-  // Triplanar blend weights from pseudo-normal
-  const absN = vec3(pseudoNormal.x.abs(), pseudoNormal.y.abs(), pseudoNormal.z.abs());
-  const wSum = absN.x.add(absN.y).add(absN.z);
-  const tw = absN.div(wSum);
-
-  // Triplanar UVs from reconstructed world position
-  const triScale = float(SKIN_TEXTURE_SCALE);
-  const uvYZ = vec2(wp.y, wp.z).mul(triScale);
-  const uvXZ = vec2(wp.x, wp.z).mul(triScale);
-  const uvXY = vec2(wp.x, wp.y).mul(triScale);
-
-  // Helper: triplanar sample for a given texture
-  function triSample(tex) {
-    return texture(tex, uvYZ).mul(tw.x)
-      .add(texture(tex, uvXZ).mul(tw.y))
-      .add(texture(tex, uvXY).mul(tw.z));
+  // Apply texture maps via standard material properties (not TSL node overrides).
+  // TSL colorNode doesn't properly feed into metallic F0 in WebGPU mode, causing
+  // metals to render white. Standard map/normalMap/etc. integrate correctly with
+  // the full PBR pipeline including metallic specular reflectance.
+  // Sphere UVs give per-sphere tiling — not seamless across spheres, but correct PBR.
+  const mapSlots = [
+    ['albedo', 'map', THREE.SRGBColorSpace],
+    ['normal', 'normalMap', THREE.LinearSRGBColorSpace],
+    ['roughness', 'roughnessMap', THREE.LinearSRGBColorSpace],
+    ['metalness', 'metalnessMap', THREE.LinearSRGBColorSpace],
+    ['emissive', 'emissiveMap', THREE.SRGBColorSpace],
+  ];
+  for (const [texKey, matSlot, colorSpace] of mapSlots) {
+    if (textures[texKey]) {
+      const tex = textures[texKey].clone();
+      tex.colorSpace = colorSpace;
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.needsUpdate = true;
+      mat[matSlot] = tex;
+    }
+  }
+  // Albedo map → white base so texture shows through (unless baseColor already set)
+  if (textures.albedo && !(textures.scalars?.baseColor)) {
+    mat.color.setHex(0xffffff);
   }
 
-  // Triplanar samples for rusty-and-warped (skin type 1)
-  const rustyAlbedoSample = triSample(rustyAlbedo);
-  const rustyNormalSample = triSample(rustyNormal);
-  const rustyRoughnessSample = triSample(rustyRoughness);
-  const rustyMetalnessSample = triSample(rustyMetalness);
-
-  // Triplanar samples for lumpy-translucent-gold (skin type 2) — albedo + normal from texture, PBR from scalars
-  const goldAlbedoSample = triSample(goldAlbedo);
-  const goldNormalSample = triSample(goldNormal);
-
-  // Per-pixel skin selection via select() chain (avoids TSL mix() precision bugs)
-  const isType1 = skinId.equal(float(1));
-  const isType2 = skinId.equal(float(2));
-
-  const finalAlbedo = select(isType1, rustyAlbedoSample.rgb, select(isType2, goldAlbedoSample.rgb, skinBaseColor));
-  const finalNormalMap = select(isType1, rustyNormalSample.rgb, select(isType2, goldNormalSample.rgb, vec3(0.5, 0.5, 1.0)));
-  const finalRoughness = select(isType1, rustyRoughnessSample.r, select(isType2, float(GOLD_ROUGHNESS), float(0.5)));
-  const finalMetalness = select(isType1, rustyMetalnessSample.r, select(isType2, float(GOLD_METALNESS), float(0.0)));
-
-  // Tint albedo by molecule color (like CPU version)
-  const hasSkin = skinId.greaterThan(float(0.5));
-  const moleculeTint = skinBaseColor;
-  const tintedAlbedo = select(hasSkin, finalAlbedo.mul(moleculeTint), skinBaseColor);
-
-  // Normal map perturbation: decode from 0..1 to -1..1, add to pseudo-normal
-  const NORMAL_MAP_STRENGTH = 1.5; // strong perturbation for visible surface detail
-  const normalOffset = finalNormalMap.sub(vec3(0.5, 0.5, 0.5)).mul(float(NORMAL_MAP_STRENGTH));
-  const perturbedNormal = select(hasSkin, pseudoNormal.add(normalOffset).normalize(), pseudoNormal);
-
-  // 3-point lighting with PBR modulation
-  const keyDir = vec3(0.49, 0.49, 0.61).normalize();
-  const fillDir = vec3(-0.74, 0.37, 0.56).normalize();
-  const rimDir = vec3(0.0, 0.41, -0.82).normalize();
-
-  const keyDot = perturbedNormal.dot(keyDir).max(0.0);
-  const fillDot = perturbedNormal.dot(fillDir).max(0.0);
-  const rimDot = perturbedNormal.dot(rimDir).max(0.0);
-
-  // GGX (Trowbridge-Reitz) microfacet specular
-  const viewDir = vec3(0.0, 0.0, 1.0);
-  const alpha = finalRoughness.mul(finalRoughness); // roughness² = GGX alpha
-  const alpha2 = alpha.mul(alpha);
-
-  // GGX distribution: D = α² / (π * (NdotH² * (α² - 1) + 1)²)
-  function ggxSpec(lightDir) {
-    const halfDir = lightDir.add(viewDir).normalize();
-    const NdotH = perturbedNormal.dot(halfDir).max(0.0);
-    const NdotH2 = NdotH.mul(NdotH);
-    const denom = NdotH2.mul(alpha2.sub(1.0)).add(1.0);
-    const D = alpha2.div(denom.mul(denom).mul(float(Math.PI)).max(0.001));
-    // Geometry term (Smith-Schlick approximation): G ≈ NdotV / (NdotV * (1-k) + k)
-    const k = alpha.add(1.0).mul(alpha.add(1.0)).div(8.0); // k = (α+1)²/8
-    const NdotL = perturbedNormal.dot(lightDir).max(0.0);
-    const NdotV_g = perturbedNormal.dot(viewDir).max(0.001);
-    const G_L = NdotL.div(NdotL.mul(float(1.0).sub(k)).add(k));
-    const G_V = NdotV_g.div(NdotV_g.mul(float(1.0).sub(k)).add(k));
-    const G = G_L.mul(G_V);
-    // Combined: D * G / (4 * NdotL * NdotV) — NdotL cancels with diffuse later
-    return D.mul(G).div(NdotV_g.mul(4.0).max(0.001));
-  }
-
-  const keySpec = ggxSpec(keyDir);
-  const fillSpec = ggxSpec(fillDir);
-  const rimSpec = ggxSpec(rimDir);
-
-  // Diffuse modulated by metalness: diffuse *= (1 - metalness)
-  const diffuseFactor = float(1.0).sub(finalMetalness);
-  const KEY_INTENSITY = 0.9;
-  const FILL_INTENSITY = 0.45;
-  const RIM_INTENSITY = 0.5;
-  const keyContrib = vec3(1.0, 0.957, 0.878).mul(keyDot).mul(KEY_INTENSITY).mul(diffuseFactor);
-  const fillContrib = vec3(0.753, 0.816, 1.0).mul(fillDot).mul(FILL_INTENSITY).mul(diffuseFactor);
-  const rimContrib = vec3(1.0, 1.0, 1.0).mul(rimDot).mul(RIM_INTENSITY).mul(diffuseFactor);
-
-  // Schlick Fresnel: F = F0 + (1 - F0) * (1 - NdotV)^5
-  const DIELECTRIC_F0 = 0.04;
-  const f0 = tintedAlbedo.mul(finalMetalness).add(vec3(DIELECTRIC_F0, DIELECTRIC_F0, DIELECTRIC_F0).mul(float(1.0).sub(finalMetalness)));
-  const NdotV = perturbedNormal.dot(viewDir).clamp(0.0, 1.0);
-  const fresnelTerm = f0.add(vec3(1.0, 1.0, 1.0).sub(f0).mul(float(1.0).sub(NdotV).pow(5.0)));
-
-  // Specular with Fresnel modulation
-  const SPEC_INTENSITY = 0.8;
-  const specTotal = fresnelTerm.mul(keySpec.add(fillSpec).add(rimSpec)).mul(SPEC_INTENSITY);
-
-  const ambient = vec3(0.25, 0.25, 0.28);
-  const directLight = tintedAlbedo.mul(ambient.add(keyContrib).add(fillContrib).add(rimContrib)).add(specTotal);
-
-  // Environment map reflections — equirectangular sampling
-  const reflDir = viewDir.negate().reflect(perturbedNormal);
-  const envU = reflDir.x.atan2(reflDir.z).div(float(Math.PI * 2)).add(0.5);
-  const envV = reflDir.y.asin().div(float(Math.PI)).add(0.5);
-  const envSample = texture(envMapTex, vec2(envU, envV));
-
-  // Environment reflection with Fresnel — edges reflect more (glistening silhouettes)
-  const envReflectance = fresnelTerm.mul(float(ENV_REFLECTION_STRENGTH));
-  const envContrib = envSample.rgb.mul(envReflectance);
-
-  // Emissive contribution — JSON skins can specify emissive glow
-  const emissiveContrib = select(isType2, tintedAlbedo.mul(float(GOLD_EMISSIVE_INTENSITY)), vec3(0, 0, 0));
-
-  const litColor = directLight.add(envContrib).add(emissiveContrib);
-
-  // Edge glow near iso-threshold
-  const edgeFactor = float(1.0).sub(d.sub(densityThresholdUniform).div(float(0.3)).clamp(0.0, 1.0));
-  const skinColor = litColor.add(tintedAlbedo.mul(edgeFactor).mul(0.1));
-
-  // Skin alpha: transparent where density < threshold
-  const skinAlpha = d.sub(densityThresholdUniform).mul(float(5.0)).clamp(0.0, 1.0).mul(skinOpacityUniform);
-
-  compositeMat.colorNode = vec4(skinColor, skinAlpha);
-
-  // Fullscreen quad: ortho camera + plane covering NDC -1..1
-  compositeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  compositeQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), compositeMat);
-  compositeScene = new THREE.Scene();
-  compositeScene.add(compositeQuad);
-
-  // --- Debug composite material ---
-  normalCompositeMat = compositeMat;
-
-  debugCompositeMat = new NodeMaterial();
-  debugCompositeMat.transparent = false;
-  debugCompositeMat.depthTest = false;
-  debugCompositeMat.depthWrite = false;
-
-  const dbgRawUV = attribute('uv');
-  const dbgUV = vec2(dbgRawUV.x, float(1.0).sub(dbgRawUV.y)); // screen-space layout
-
-  const sRight = float(0.5).step(dbgUV.x);
-  const sTop = float(0.5).step(dbgUV.y);
-
-  const localU = dbgUV.x.mul(2.0).sub(sRight);
-  const localV = dbgUV.y.mul(2.0).sub(sTop);
-  const localUV = vec2(localU, float(1.0).sub(localV)); // flip back for RT sampling
-
-  // Sample density RT at the local UV for this quadrant
-  const dbgQ = texture(densityRT.texture, localUV);
-  // Sample worldPos RT at the local UV
-  const dbgWP = texture(worldPosRT.texture, localUV);
-
-  // Top-left: raw density RT RGB
-  const tlColor = vec3(dbgQ.r, dbgQ.g, dbgQ.b);
-
-  // Top-right: worldPosRT RGB (world position × density)
-  const trColor = vec3(dbgWP.r.abs(), dbgWP.g.abs(), dbgWP.b.abs()).mul(0.3);
-
-  // Bottom-left: reconstructed base color (GBA / R)
-  const dbgD = dbgQ.r.max(0.001);
-  const blColor = vec3(dbgQ.g.div(dbgD), dbgQ.b.div(dbgD), dbgQ.a.div(dbgD));
-
-  // Bottom-right: reconstructed skin type ID as heat map
-  const dbgSkinId = dbgWP.a.div(dbgD);
-  const brColor = vec3(dbgSkinId.mul(0.5), float(0.2), float(1.0).sub(dbgSkinId.mul(0.5)));
-
-  const topRow = tlColor.mul(float(1.0).sub(sRight)).add(trColor.mul(sRight));
-  const botRow = blColor.mul(float(1.0).sub(sRight)).add(brColor.mul(sRight));
-  const dbgFinal = botRow.mul(float(1.0).sub(sTop)).add(topRow.mul(sTop));
-
-  const LINE_HALF_WIDTH = 0.003;
-  const hLine = dbgUV.y.sub(0.5).abs().step(LINE_HALF_WIDTH);
-  const vLine = dbgUV.x.sub(0.5).abs().step(LINE_HALF_WIDTH);
-  const lineAlpha = hLine.max(vLine);
-  const lineColor = vec3(0.3, 0.3, 0.3);
-  const finalWithLines = dbgFinal.mul(float(1.0).sub(lineAlpha)).add(lineColor.mul(lineAlpha));
-
-  debugCompositeMat.colorNode = vec4(finalWithLines, 1.0);
+  mat.needsUpdate = true;
+  return mat;
 }
 
 function updateSkinOpacity() {
-  if (skinOpacityUniform) skinOpacityUniform.value = skinOpacity;
+  for (const entry of moleculeSkins.values()) {
+    if (entry.material) entry.material.opacity = skinOpacity;
+    if (entry.meshes) {
+      for (const m of entry.meshes) m.visible = skinOpacity > 0;
+    }
+  }
 }
 
-// Upload atom positions/colors into instanced attributes
-function uploadMetaballData() {
+function updateMoleculeSkins() {
   const molecules = findMolecules();
-  let idx = 0;
-
-  // Update moleculeSkins map
   const activeKeys = new Set();
+
   for (const mol of molecules) {
     const sortedIds = [...mol].sort((a, b) => a - b);
     const key = sortedIds.join(',');
     activeKeys.add(key);
 
-    if (!moleculeSkins.has(key)) {
-      moleculeSkins.set(key, { atomIds: mol, skinType: 'none', key });
+    let entry = moleculeSkins.get(key);
+    if (!entry) {
+      entry = { atomIds: mol, skinType: 'none', key, material: null, meshes: [] };
+      moleculeSkins.set(key, entry);
     } else {
-      moleculeSkins.get(key).atomIds = mol;
+      entry.atomIds = mol;
     }
 
-    const skinCol = getSkinColor(mol);
-    const r = ((skinCol.color >> 16) & 0xff) / 255;
-    const g = ((skinCol.color >> 8) & 0xff) / 255;
-    const b = (skinCol.color & 0xff) / 255;
+    // Lazily create material
+    if (!entry.material) {
+      const skinCol = getSkinColor(mol);
+      entry.material = createSkinMaterial(entry.skinType, skinCol.color);
+    }
 
-    // Per-molecule skin type index: GPU uses this to select texture set
-    const skinEntry = moleculeSkins.get(key);
-    const skinType = skinEntry ? skinEntry.skinType : 'none';
-    const skinTypeIndex = SKIN_INDEX[skinType] || 0;
+    // Ensure correct number of meshes (one per atom)
+    const geom = getSkinGeometry(entry.skinType);
+    while (entry.meshes.length < mol.length) {
+      const mesh = new THREE.Mesh(geom, entry.material);
+      mesh.renderOrder = 1; // render after scene objects
+      scene.add(mesh);
+      entry.meshes.push(mesh);
+    }
+    while (entry.meshes.length > mol.length) {
+      const mesh = entry.meshes.pop();
+      scene.remove(mesh);
+    }
 
-    for (const id of mol) {
-      if (idx >= META_MAX_ATOMS) break;
-      const a = atomMap.get(id);
+    // Position and scale each sphere at its atom
+    for (let i = 0; i < mol.length; i++) {
+      const a = atomMap.get(mol[i]);
       if (!a) continue;
-
-      const pos = a.group.position;
-      const i3 = idx * 3;
-      metaPositionArray[i3] = pos.x;
-      metaPositionArray[i3 + 1] = pos.y;
-      metaPositionArray[i3 + 2] = pos.z;
-      // FLEX capsule: use radius that covers the capsule half-length + cap radius
-      metaRadiusArray[idx] = a.type === 'flex' ? (FLEX_RADIUS + FLEX_LENGTH * 0.5) : ATOM_RADIUS;
-
-      const i4 = idx * 4;
-      metaColorArray[i4] = r;
-      metaColorArray[i4 + 1] = g;
-      metaColorArray[i4 + 2] = b;
-      metaColorArray[i4 + 3] = skinTypeIndex;
-      idx++;
+      const mesh = entry.meshes[i];
+      mesh.position.copy(a.group.position);
+      const radius = (a.type === 'flex'
+        ? (FLEX_RADIUS + FLEX_LENGTH * 0.5)
+        : ATOM_RADIUS) * SKIN_SPHERE_INFLATE;
+      mesh.scale.setScalar(radius);
+      mesh.visible = skinOpacity > 0;
     }
   }
 
-  // Prune stale molecules
-  for (const key of moleculeSkins.keys()) {
-    if (!activeKeys.has(key)) moleculeSkins.delete(key);
+  // Remove stale molecules
+  for (const [key, entry] of moleculeSkins.entries()) {
+    if (!activeKeys.has(key)) {
+      for (const mesh of entry.meshes) scene.remove(mesh);
+      if (entry.material) entry.material.dispose();
+      moleculeSkins.delete(key);
+    }
   }
-
-  densityMesh.count = idx;
-  worldPosMesh.count = idx;
-
-  const geo = densityMesh.geometry;
-  geo.getAttribute('instPos').needsUpdate = true;
-  geo.getAttribute('instRadius').needsUpdate = true;
-  geo.getAttribute('instColor').needsUpdate = true;
 }
 
 // Find which skin entry an atom belongs to
@@ -1838,8 +1545,27 @@ function showSkinPicker(skin, screenX, screenY) {
 
   select.onchange = async () => {
     const newType = select.value;
-    if (newType !== 'none') await loadSkinTextureSet(newType);
+    // Load skin textures if needed
+    const regEntry = SKIN_REGISTRY.find(s => s.name === newType);
+    if (regEntry && regEntry.type === 'json') {
+      await loadSkinFromJSON(regEntry.name, regEntry.path);
+    } else if (newType !== 'none') {
+      await loadSkinTextureSet(newType);
+    }
     skin.skinType = newType;
+    // Ensure displacement geometry is ready (async decode, cached after first load)
+    await ensureDisplacementData(newType);
+    // Recreate material with new skin type
+    const skinCol = getSkinColor(skin.atomIds);
+    const newMat = createSkinMaterial(newType, skinCol.color);
+    if (skin.material) skin.material.dispose();
+    skin.material = newMat;
+    // Update geometry and material on all meshes
+    const geom = getSkinGeometry(newType);
+    for (const mesh of (skin.meshes || [])) {
+      mesh.geometry = geom;
+      mesh.material = newMat;
+    }
     picker.style.display = 'none';
   };
 }
@@ -2030,10 +1756,18 @@ async function init() {
   renderer.setClearColor(BG_COLOR, 1);
   document.body.insertBefore(renderer.domElement, document.body.firstChild);
   await renderer.init();
+  renderer.toneMapping = THREE.NeutralToneMapping;
+  renderer.toneMappingExposure = TONE_MAP_EXPOSURE;
 
   scene = new THREE.Scene();
   scene.background = new THREE.Color(BG_COLOR);
   scene.fog = new THREE.Fog(BG_COLOR, FOG_NEAR, FOG_FAR);
+
+  // IBL environment for PBR reflections (what makes metals look metallic)
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment()).texture;
+  scene.environmentIntensity = ENV_INTENSITY;
+  pmrem.dispose();
 
   camera = new THREE.PerspectiveCamera(CAMERA_FOV, window.innerWidth / window.innerHeight, CAMERA_NEAR, CAMERA_FAR);
   camera.position.set(...CAMERA_INITIAL_POS);
@@ -2104,8 +1838,7 @@ async function init() {
     }
   }
 
-  // Initialize metaball pipeline (density pass + composite)
-  initMetaballPipeline();
+  // Skin system uses real geometry (MeshPhysicalMaterial) — no pipeline init needed
 
   animate();
 }
@@ -2150,6 +1883,11 @@ function buildPalette() {
     for (const c of [...connections]) removeConnection(c);
     for (const a of [...atoms]) scene.remove(a.group);
     atoms.length = 0; atomMap.clear(); connections.length = 0; nextAtomId = 0; undoHistory.length = 0;
+    // Clean up skin meshes
+    for (const entry of moleculeSkins.values()) {
+      for (const mesh of (entry.meshes || [])) scene.remove(mesh);
+      if (entry.material) entry.material.dispose();
+    }
     moleculeSkins.clear();
     updateAtomCount(); showToast('Cleared');
   });
@@ -2176,6 +1914,33 @@ function buildPalette() {
 
   sliderGroup.append(sliderLabel, slider);
   pal.appendChild(sliderGroup);
+
+  // --- Brightness slider (tone mapping exposure) ---
+  const brightGroup = document.createElement('div');
+  brightGroup.className = 'slider-group';
+
+  const brightLabel = document.createElement('div');
+  brightLabel.className = 'slider-label';
+  brightLabel.innerHTML = '<span>Bright</span><span class="slider-value" id="bright-value">50%</span>';
+
+  const BRIGHT_MIN = 0.4;
+  const BRIGHT_MAX = 3.6;
+  // Slider 0–100, midpoint (50) = TONE_MAP_EXPOSURE
+  function brightSliderToExposure(v) {
+    const t = v / 100; // 0–1, 0.5 = midpoint
+    return BRIGHT_MIN + t * (BRIGHT_MAX - BRIGHT_MIN);
+  }
+  const brightSlider = document.createElement('input');
+  brightSlider.type = 'range'; brightSlider.min = '0'; brightSlider.max = '100'; brightSlider.value = '50';
+  brightSlider.id = 'bright-slider';
+  brightSlider.addEventListener('input', (e) => {
+    const v = parseInt(e.target.value);
+    document.getElementById('bright-value').textContent = v + '%';
+    renderer.toneMappingExposure = brightSliderToExposure(v);
+  });
+
+  brightGroup.append(brightLabel, brightSlider);
+  pal.appendChild(brightGroup);
 }
 
 // ===========================================================================
@@ -2471,11 +2236,11 @@ function onKeyDown(e) {
   }
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); }
   if (e.key === 'd' || e.key === 'D') {
-    debugPipeline = !debugPipeline;
-    if (compositeQuad && debugCompositeMat && normalCompositeMat) {
-      compositeQuad.material = debugPipeline ? debugCompositeMat : normalCompositeMat;
+    // Toggle wireframe on skin meshes for debugging
+    for (const entry of moleculeSkins.values()) {
+      if (entry.material) entry.material.wireframe = !entry.material.wireframe;
     }
-    showToast(debugPipeline ? 'Debug pipeline: ON' : 'Debug pipeline: OFF');
+    showToast('Skin wireframe toggled');
   }
 }
 
@@ -2484,8 +2249,6 @@ function onResize() {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
-  if (densityRT) densityRT.setSize(w, h);
-  if (worldPosRT) worldPosRT.setSize(w, h);
 }
 
 function findAtomUnderRay() {
@@ -2535,43 +2298,29 @@ async function animate() {
   else if (selectedAtomType) renderer.domElement.style.cursor = 'copy';
   else renderer.domElement.style.cursor = 'default';
 
-  // Upload density data and update billboard orientation
+  // Update skin sphere positions (real geometry in main scene)
   if (skinOpacity > 0) {
-    uploadMetaballData();
-    camera.updateMatrixWorld(true);
-    // Update BOTH materials' view matrix uniforms
-    densityMesh.material.userData.viewMatrixUniform.value.copy(camera.matrixWorldInverse);
-    worldPosMesh.material.userData.viewMatrixUniform.value.copy(camera.matrixWorldInverse);
+    updateMoleculeSkins();
   }
 
-  // 1. Render scene directly to screen (ground, atoms, lights — everything)
+  // Single render pass — skin spheres are in the scene, lit by scene lights + IBL
   renderer.setRenderTarget(null);
   await renderer.renderAsync(scene, camera);
-
-  // 2-4. Density RT → WorldPos RT → Composite overlay
-  if (skinOpacity > 0) {
-    renderer.setClearColor(0x000000, 0);
-
-    // 2. Density billboards → densityRT
-    renderer.setRenderTarget(densityRT);
-    await renderer.renderAsync(densityScene, camera);
-
-    // 3. WorldPos billboards → worldPosRT
-    renderer.setRenderTarget(worldPosRT);
-    await renderer.renderAsync(worldPosScene, camera);
-
-    // 4. Composite skin overlay onto screen (no clear — preserve pass 1 scene)
-    renderer.setClearColor(BG_COLOR, 1);
-    renderer.setRenderTarget(null);
-    renderer.autoClear = false;
-    await renderer.renderAsync(compositeScene, compositeCamera);
-    renderer.autoClear = true;
-  }
 }
 
 // ===========================================================================
 // BOOT
 // ===========================================================================
+
+// Expose internals for test automation
+window.__test = {
+  get atoms() { return atoms; },
+  get moleculeSkins() { return moleculeSkins; },
+  get skinTextureCache() { return skinTextureCache; },
+  loadSkinFromJSON, createSkinMaterial, getSkinColor, findSkinForAtom,
+  ensureDisplacementData, getSkinGeometry,
+  SKIN_REGISTRY, AVAILABLE_SKINS,
+};
 
 init().catch(err => {
   console.error('Init failed:', err);
