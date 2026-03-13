@@ -53,12 +53,12 @@ if (await page.locator('#skin-picker').isVisible()) {
   await page.screenshot({ path: '/tmp/twoskins-2-nopicker.png' });
 }
 
-// Apply translucent-wobbly-gold to Tracker
+// Apply lumpy-translucent-gold to Tracker
 await page.mouse.dblclick(800, 400);
 await page.waitForTimeout(1000);
 
 if (await page.locator('#skin-picker').isVisible()) {
-  await page.locator('#skin-select').selectOption('translucent-wobbly-gold');
+  await page.locator('#skin-select').selectOption('lumpy-translucent-gold');
   await page.waitForTimeout(2000);
   await page.screenshot({ path: '/tmp/twoskins-3-both-skins.png' });
 } else {

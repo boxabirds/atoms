@@ -54,7 +54,7 @@ await page.screenshot({ path: '/tmp/final-2-osc-rusty.png' });
 await page.mouse.dblclick(750, 380);
 await page.waitForTimeout(1000);
 if (await page.locator('#skin-picker').isVisible()) {
-  await page.locator('#skin-select').selectOption('translucent-wobbly-gold');
+  await page.locator('#skin-select').selectOption('lumpy-translucent-gold');
   await page.waitForTimeout(2000);
 }
 await page.screenshot({ path: '/tmp/final-3-both-skins.png' });

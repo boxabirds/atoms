@@ -392,8 +392,13 @@ const SKIN_MIN_ATOMS = 2;            // minimum atoms in a molecule to get a ski
 const SKIN_TEXTURE_SCALE = 2.0;      // world-space tiling density for triplanar mapping
 const ENV_MAP_SIZE = 256;            // synthetic environment map resolution
 const ENV_REFLECTION_STRENGTH = 0.6; // environment reflection intensity
-const SKIN_INDEX = { 'none': 0, 'rusty-and-warped': 1, 'translucent-wobbly-gold': 2 };
-const AVAILABLE_SKINS = ['none', 'rusty-and-warped', 'translucent-wobbly-gold'];  // extensible skin list
+const SKIN_REGISTRY = [
+  { name: 'none', index: 0 },
+  { name: 'rusty-and-warped', index: 1, type: 'png', path: './skins/rusty-and-warped/' },
+  { name: 'lumpy-translucent-gold', index: 2, type: 'json', path: './skins-json/lumpy-translucent-gold.shader.json' },
+];
+const SKIN_INDEX = Object.fromEntries(SKIN_REGISTRY.map(s => [s.name, s.index]));
+const AVAILABLE_SKINS = SKIN_REGISTRY.map(s => s.name);
 const META_MAX_ATOMS = 1024;         // max atoms in density pass (WebGPU uniform buffer limit: 1024 × 64B = 65536B)
 const META_BILLBOARD_SCALE = 4.0;    // billboard radius multiplier over atom radius (covers falloff)
 const META_FALLOFF_RADIUS_SQ = 1.0;  // squared falloff radius for polynomial kernel
@@ -1199,48 +1204,119 @@ async function loadSkinTextureSet(name) {
   skinTextureCache.set(name, textures);
 }
 
+async function loadSkinFromJSON(name, url) {
+  if (skinTextureCache.has(name)) return;
+  const resp = await fetch(url);
+  const json = await resp.json();
+
+  const textures = { scalars: json.scalars || {} };
+
+  // Decode base64 data URI maps → THREE.Texture
+  const mapEntries = Object.entries(json.maps || {});
+  const promises = mapEntries.map(([mapType, dataUri]) => {
+    return new Promise(resolve => {
+      const img = new Image();
+      img.onload = () => {
+        const tex = new THREE.Texture(img);
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+        tex.colorSpace = mapType === 'albedo' ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
+        tex.needsUpdate = true;
+        textures[mapType] = tex;
+        resolve();
+      };
+      img.onerror = () => resolve(); // skip failed maps
+      img.src = dataUri;
+    });
+  });
+  await Promise.all(promises);
+  skinTextureCache.set(name, textures);
+}
+
 // ---------------------------------------------------------------------------
 // SYNTHETIC ENVIRONMENT MAP — studio-style HDR for reflections
 // ---------------------------------------------------------------------------
 
 function createEnvMapTexture() {
   const w = ENV_MAP_SIZE, h = ENV_MAP_SIZE / 2;
-  const canvas = document.createElement('canvas');
-  canvas.width = w; canvas.height = h;
-  const ctx = canvas.getContext('2d');
+  const data = new Float32Array(w * h * 4);
 
-  // Dark gradient background (sky → ground)
-  const grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, '#1a1a2e');    // dark blue sky top
-  grad.addColorStop(0.35, '#2d2d44'); // mid sky
-  grad.addColorStop(0.5, '#3a3a50');  // horizon
-  grad.addColorStop(0.65, '#1a1a1a'); // ground
-  grad.addColorStop(1, '#0a0a0a');    // dark ground
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, w, h);
+  // HDR studio environment — values > 1.0 produce real specular highlights
+  const HDR_SKY_TOP = [0.10, 0.10, 0.18];
+  const HDR_SKY_MID = [0.18, 0.18, 0.27];
+  const HDR_HORIZON = [0.23, 0.23, 0.31];
+  const HDR_GROUND = [0.10, 0.10, 0.10];
+  const HDR_GROUND_DARK = [0.04, 0.04, 0.04];
 
-  // Bright studio light spots (these create the "glistening" reflections)
-  function addLight(cx, cy, radius, intensity, r, g, b) {
-    const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
-    grd.addColorStop(0, `rgba(${r},${g},${b},${intensity})`);
-    grd.addColorStop(0.3, `rgba(${r},${g},${b},${intensity * 0.5})`);
-    grd.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = grd;
-    ctx.fillRect(cx - radius, cy - radius, radius * 2, radius * 2);
+  // Fill with sky-to-ground gradient
+  for (let y = 0; y < h; y++) {
+    const v = y / (h - 1); // 0=top, 1=bottom
+    let r, g, b;
+    if (v < 0.35) {
+      const t = v / 0.35;
+      r = HDR_SKY_TOP[0] + (HDR_SKY_MID[0] - HDR_SKY_TOP[0]) * t;
+      g = HDR_SKY_TOP[1] + (HDR_SKY_MID[1] - HDR_SKY_TOP[1]) * t;
+      b = HDR_SKY_TOP[2] + (HDR_SKY_MID[2] - HDR_SKY_TOP[2]) * t;
+    } else if (v < 0.5) {
+      const t = (v - 0.35) / 0.15;
+      r = HDR_SKY_MID[0] + (HDR_HORIZON[0] - HDR_SKY_MID[0]) * t;
+      g = HDR_SKY_MID[1] + (HDR_HORIZON[1] - HDR_SKY_MID[1]) * t;
+      b = HDR_SKY_MID[2] + (HDR_HORIZON[2] - HDR_SKY_MID[2]) * t;
+    } else if (v < 0.65) {
+      const t = (v - 0.5) / 0.15;
+      r = HDR_HORIZON[0] + (HDR_GROUND[0] - HDR_HORIZON[0]) * t;
+      g = HDR_HORIZON[1] + (HDR_GROUND[1] - HDR_HORIZON[1]) * t;
+      b = HDR_HORIZON[2] + (HDR_GROUND[2] - HDR_HORIZON[2]) * t;
+    } else {
+      const t = (v - 0.65) / 0.35;
+      r = HDR_GROUND[0] + (HDR_GROUND_DARK[0] - HDR_GROUND[0]) * t;
+      g = HDR_GROUND[1] + (HDR_GROUND_DARK[1] - HDR_GROUND[1]) * t;
+      b = HDR_GROUND[2] + (HDR_GROUND_DARK[2] - HDR_GROUND[2]) * t;
+    }
+    for (let x = 0; x < w; x++) {
+      const idx = (y * w + x) * 4;
+      data[idx] = r;
+      data[idx + 1] = g;
+      data[idx + 2] = b;
+      data[idx + 3] = 1.0;
+    }
   }
 
-  // Key light — warm, bright, upper-right
-  addLight(w * 0.7, h * 0.2, w * 0.15, 1.0, 255, 245, 220);
-  // Fill light — cool, softer, upper-left
-  addLight(w * 0.2, h * 0.25, w * 0.12, 0.6, 200, 210, 255);
-  // Rim light — white, behind
-  addLight(w * 0.5, h * 0.1, w * 0.1, 0.8, 255, 255, 255);
-  // Ground bounce — warm, below
-  addLight(w * 0.5, h * 0.75, w * 0.25, 0.3, 180, 160, 140);
-  // Secondary highlight — adds asymmetry
-  addLight(w * 0.85, h * 0.35, w * 0.08, 0.5, 255, 230, 200);
+  // HDR light spots — values 3.0-8.0 for real specular hotspots
+  function addHDRLight(cx, cy, radius, intensity, lr, lg, lb) {
+    const rSq = radius * radius;
+    const x0 = Math.max(0, Math.floor(cx - radius));
+    const x1 = Math.min(w - 1, Math.ceil(cx + radius));
+    const y0 = Math.max(0, Math.floor(cy - radius));
+    const y1 = Math.min(h - 1, Math.ceil(cy + radius));
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const dx = x - cx, dy = y - cy;
+        const distSq = dx * dx + dy * dy;
+        if (distSq > rSq) continue;
+        const t = 1.0 - Math.sqrt(distSq) / radius;
+        const falloff = t * t; // quadratic falloff
+        const idx = (y * w + x) * 4;
+        data[idx] += lr * intensity * falloff;
+        data[idx + 1] += lg * intensity * falloff;
+        data[idx + 2] += lb * intensity * falloff;
+      }
+    }
+  }
 
-  const tex = new THREE.CanvasTexture(canvas);
+  // Key light — warm, bright, upper-right (HDR intensity 8.0)
+  addHDRLight(w * 0.7, h * 0.2, w * 0.15, 8.0, 1.0, 0.96, 0.86);
+  // Fill light — cool, softer, upper-left
+  addHDRLight(w * 0.2, h * 0.25, w * 0.12, 4.0, 0.78, 0.82, 1.0);
+  // Rim light — white, behind (very bright for silhouette highlights)
+  addHDRLight(w * 0.5, h * 0.1, w * 0.1, 6.0, 1.0, 1.0, 1.0);
+  // Ground bounce — warm, below
+  addHDRLight(w * 0.5, h * 0.75, w * 0.25, 2.0, 0.71, 0.63, 0.55);
+  // Secondary highlight — adds asymmetry
+  addHDRLight(w * 0.85, h * 0.35, w * 0.08, 5.0, 1.0, 0.90, 0.78);
+  // Extra specular hotspot — small and intense for sharp reflections
+  addHDRLight(w * 0.65, h * 0.15, w * 0.04, 12.0, 1.0, 0.98, 0.94);
+
+  const tex = new THREE.DataTexture(data, w, h, THREE.RGBAFormat, THREE.FloatType);
   tex.mapping = THREE.EquirectangularReflectionMapping;
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.ClampToEdgeWrapping;
@@ -1255,7 +1331,7 @@ function createEnvMapTexture() {
 // Instance attribute arrays (pre-allocated, updated each frame)
 const metaPositionArray = new Float32Array(META_MAX_ATOMS * 3);
 const metaRadiusArray = new Float32Array(META_MAX_ATOMS);
-const metaColorArray = new Float32Array(META_MAX_ATOMS * 4); // RGBA: rgb = color, a = skin type index (0=none, 1=rusty, 2=gold)
+const metaColorArray = new Float32Array(META_MAX_ATOMS * 4); // RGBA: rgb = color, a = skin type index (0=none, 1=rusty, 2=lumpy-gold)
 
 function initMetaballPipeline() {
   // --- Shared billboard geometry with instanced attributes ---
@@ -1423,10 +1499,13 @@ function initMetaballPipeline() {
   const rustyRoughness = getSkinTex('rusty-and-warped', 'roughness', fallbackRoughness);
   const rustyMetalness = getSkinTex('rusty-and-warped', 'metalness', fallbackMetalness);
 
-  const goldAlbedo = getSkinTex('translucent-wobbly-gold', 'albedo', fallbackAlbedo);
-  const goldNormal = getSkinTex('translucent-wobbly-gold', 'normal', fallbackNormal);
-  const goldRoughness = getSkinTex('translucent-wobbly-gold', 'roughness', fallbackRoughness);
-  const goldMetalness = getSkinTex('translucent-wobbly-gold', 'metalness', fallbackMetalness);
+  const goldAlbedo = getSkinTex('lumpy-translucent-gold', 'albedo', fallbackAlbedo);
+  const goldNormal = getSkinTex('lumpy-translucent-gold', 'normal', fallbackNormal);
+  // JSON skins use scalar PBR values instead of texture maps
+  const goldScalars = skinTextureCache.get('lumpy-translucent-gold')?.scalars || {};
+  const GOLD_ROUGHNESS = goldScalars.roughness ?? 0.5;
+  const GOLD_METALNESS = goldScalars.metalness ?? 0.0;
+  const GOLD_EMISSIVE_INTENSITY = goldScalars.emissiveIntensity ?? 0.0;
 
   // ---- Environment map for reflections ----
   const envMapTex = createEnvMapTexture();
@@ -1453,15 +1532,29 @@ function initMetaballPipeline() {
   const skinId = wpColor.a.div(d.max(0.001)).round();
 
   // Pseudo-normal from density gradient
-  const eps = float(META_NORMAL_EPSILON);
-  const dLeft = texture(densityRT.texture, uvNode.sub(vec2(eps, 0.0))).r;
-  const dRight = texture(densityRT.texture, uvNode.add(vec2(eps, 0.0))).r;
-  const dDown = texture(densityRT.texture, uvNode.sub(vec2(0.0, eps))).r;
-  const dUp = texture(densityRT.texture, uvNode.add(vec2(0.0, eps))).r;
+  // Apply nonlinear "dome" transform before differentiating: sqrt(clamp(1 - d/peak))
+  // This converts the flat density plateau into a hemisphere shape with real curvature
+  const DENSITY_DOME_SHARPNESS = 1.5;   // exponential falloff rate (higher = tighter dome)
+  const NORMAL_GRAD_EPSILON = 0.008;    // screen-space sampling offset (wider = smoother normals)
+  const NORMAL_Z_SCALE = 0.12;          // Z bias — lower = more curvature, stronger 3D effect
+  const eps = float(NORMAL_GRAD_EPSILON);
+
+  // Dome function: maps density → hemisphere height using exponential decay
+  // 1 - exp(-sharpness * d) gives smooth dome: zero at edge (d=0), asymptotes to 1 at center
+  // Unlike clamp+sqrt, this preserves gradient information at ALL density levels
+  function domeFunc(rawD) {
+    return float(1.0).sub(rawD.mul(float(-DENSITY_DOME_SHARPNESS)).exp());
+  }
+
+  const dCenter = domeFunc(d);
+  const dLeft = domeFunc(texture(densityRT.texture, uvNode.sub(vec2(eps, 0.0))).r);
+  const dRight = domeFunc(texture(densityRT.texture, uvNode.add(vec2(eps, 0.0))).r);
+  const dDown = domeFunc(texture(densityRT.texture, uvNode.sub(vec2(0.0, eps))).r);
+  const dUp = domeFunc(texture(densityRT.texture, uvNode.add(vec2(0.0, eps))).r);
   const gradX = dRight.sub(dLeft);
   const gradY = dUp.sub(dDown);
-  // Y gradient sign: UV Y is flipped relative to screen Y, so negate gradY differently
-  const pseudoNormal = vec3(gradX.negate(), gradY, float(0.15)).normalize();
+  // Normal: XY from dome gradient (curvature), Z from dome height (front-facing at center)
+  const pseudoNormal = vec3(gradX.negate(), gradY, dCenter.mul(float(NORMAL_Z_SCALE))).normalize();
 
   // Triplanar blend weights from pseudo-normal
   const absN = vec3(pseudoNormal.x.abs(), pseudoNormal.y.abs(), pseudoNormal.z.abs());
@@ -1487,11 +1580,9 @@ function initMetaballPipeline() {
   const rustyRoughnessSample = triSample(rustyRoughness);
   const rustyMetalnessSample = triSample(rustyMetalness);
 
-  // Triplanar samples for translucent-wobbly-gold (skin type 2)
+  // Triplanar samples for lumpy-translucent-gold (skin type 2) — albedo + normal from texture, PBR from scalars
   const goldAlbedoSample = triSample(goldAlbedo);
   const goldNormalSample = triSample(goldNormal);
-  const goldRoughnessSample = triSample(goldRoughness);
-  const goldMetalnessSample = triSample(goldMetalness);
 
   // Per-pixel skin selection via select() chain (avoids TSL mix() precision bugs)
   const isType1 = skinId.equal(float(1));
@@ -1499,8 +1590,8 @@ function initMetaballPipeline() {
 
   const finalAlbedo = select(isType1, rustyAlbedoSample.rgb, select(isType2, goldAlbedoSample.rgb, skinBaseColor));
   const finalNormalMap = select(isType1, rustyNormalSample.rgb, select(isType2, goldNormalSample.rgb, vec3(0.5, 0.5, 1.0)));
-  const finalRoughness = select(isType1, rustyRoughnessSample.r, select(isType2, goldRoughnessSample.r, float(0.5)));
-  const finalMetalness = select(isType1, rustyMetalnessSample.r, select(isType2, goldMetalnessSample.r, float(0.0)));
+  const finalRoughness = select(isType1, rustyRoughnessSample.r, select(isType2, float(GOLD_ROUGHNESS), float(0.5)));
+  const finalMetalness = select(isType1, rustyMetalnessSample.r, select(isType2, float(GOLD_METALNESS), float(0.0)));
 
   // Tint albedo by molecule color (like CPU version)
   const hasSkin = skinId.greaterThan(float(0.5));
@@ -1580,7 +1671,10 @@ function initMetaballPipeline() {
   const envReflectance = fresnelTerm.mul(float(ENV_REFLECTION_STRENGTH));
   const envContrib = envSample.rgb.mul(envReflectance);
 
-  const litColor = directLight.add(envContrib);
+  // Emissive contribution — JSON skins can specify emissive glow
+  const emissiveContrib = select(isType2, tintedAlbedo.mul(float(GOLD_EMISSIVE_INTENSITY)), vec3(0, 0, 0));
+
+  const litColor = directLight.add(envContrib).add(emissiveContrib);
 
   // Edge glow near iso-threshold
   const edgeFactor = float(1.0).sub(d.sub(densityThresholdUniform).div(float(0.3)).clamp(0.0, 1.0));
@@ -2001,8 +2095,13 @@ async function init() {
   updateFreezeUI();
 
   // Preload all available skin texture sets before building pipeline
-  for (const name of AVAILABLE_SKINS) {
-    if (name !== 'none') await loadSkinTextureSet(name);
+  for (const entry of SKIN_REGISTRY) {
+    if (entry.name === 'none') continue;
+    if (entry.type === 'json') {
+      await loadSkinFromJSON(entry.name, entry.path);
+    } else {
+      await loadSkinTextureSet(entry.name);
+    }
   }
 
   // Initialize metaball pipeline (density pass + composite)

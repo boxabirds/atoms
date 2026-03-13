@@ -105,7 +105,7 @@ const scenarios = [
     run: async (page) => {
       await applySkin(page, 640, 380, 'rusty-and-warped');
       await page.waitForTimeout(1500);
-      await applySkin(page, 850, 380, 'translucent-wobbly-gold');
+      await applySkin(page, 850, 380, 'lumpy-translucent-gold');
       await page.waitForTimeout(2000);
     }
   },
