@@ -1521,20 +1521,32 @@ function initMetaballPipeline() {
   const fillDot = perturbedNormal.dot(fillDir).max(0.0);
   const rimDot = perturbedNormal.dot(rimDir).max(0.0);
 
-  // Specular: Blinn-Phong NdotH approximation (view ≈ (0,0,1) in screen space)
+  // GGX (Trowbridge-Reitz) microfacet specular
   const viewDir = vec3(0.0, 0.0, 1.0);
-  const keyHalf = keyDir.add(viewDir).normalize();
-  const fillHalf = fillDir.add(viewDir).normalize();
-  const rimHalf = rimDir.add(viewDir).normalize();
+  const alpha = finalRoughness.mul(finalRoughness); // roughness² = GGX alpha
+  const alpha2 = alpha.mul(alpha);
 
-  // specPower = mix(8, 128, 1-roughness)
-  const SPEC_POWER_MIN = 8.0;
-  const SPEC_POWER_MAX = 128.0;
-  const specPower = float(SPEC_POWER_MIN).add(float(1.0).sub(finalRoughness).mul(float(SPEC_POWER_MAX - SPEC_POWER_MIN)));
+  // GGX distribution: D = α² / (π * (NdotH² * (α² - 1) + 1)²)
+  function ggxSpec(lightDir) {
+    const halfDir = lightDir.add(viewDir).normalize();
+    const NdotH = perturbedNormal.dot(halfDir).max(0.0);
+    const NdotH2 = NdotH.mul(NdotH);
+    const denom = NdotH2.mul(alpha2.sub(1.0)).add(1.0);
+    const D = alpha2.div(denom.mul(denom).mul(float(Math.PI)).max(0.001));
+    // Geometry term (Smith-Schlick approximation): G ≈ NdotV / (NdotV * (1-k) + k)
+    const k = alpha.add(1.0).mul(alpha.add(1.0)).div(8.0); // k = (α+1)²/8
+    const NdotL = perturbedNormal.dot(lightDir).max(0.0);
+    const NdotV_g = perturbedNormal.dot(viewDir).max(0.001);
+    const G_L = NdotL.div(NdotL.mul(float(1.0).sub(k)).add(k));
+    const G_V = NdotV_g.div(NdotV_g.mul(float(1.0).sub(k)).add(k));
+    const G = G_L.mul(G_V);
+    // Combined: D * G / (4 * NdotL * NdotV) — NdotL cancels with diffuse later
+    return D.mul(G).div(NdotV_g.mul(4.0).max(0.001));
+  }
 
-  const keySpec = perturbedNormal.dot(keyHalf).max(0.0).pow(specPower);
-  const fillSpec = perturbedNormal.dot(fillHalf).max(0.0).pow(specPower);
-  const rimSpec = perturbedNormal.dot(rimHalf).max(0.0).pow(specPower);
+  const keySpec = ggxSpec(keyDir);
+  const fillSpec = ggxSpec(fillDir);
+  const rimSpec = ggxSpec(rimDir);
 
   // Diffuse modulated by metalness: diffuse *= (1 - metalness)
   const diffuseFactor = float(1.0).sub(finalMetalness);
