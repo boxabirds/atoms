@@ -390,12 +390,14 @@ const VELOCITY_CAP = 8.0;            // max speed any atom can reach
 const SKIN_DEFAULT_OPACITY = 0.5;
 const SKIN_MIN_ATOMS = 2;            // minimum atoms in a molecule to get a skin
 const SKIN_TEXTURE_SCALE = 2.0;      // world-space tiling density for triplanar mapping
+const ENV_MAP_SIZE = 256;            // synthetic environment map resolution
+const ENV_REFLECTION_STRENGTH = 0.6; // environment reflection intensity
 const SKIN_INDEX = { 'none': 0, 'rusty-and-warped': 1, 'translucent-wobbly-gold': 2 };
 const AVAILABLE_SKINS = ['none', 'rusty-and-warped', 'translucent-wobbly-gold'];  // extensible skin list
 const META_MAX_ATOMS = 1024;         // max atoms in density pass (WebGPU uniform buffer limit: 1024 × 64B = 65536B)
-const META_BILLBOARD_SCALE = 3.5;    // billboard radius multiplier over atom radius (covers falloff)
+const META_BILLBOARD_SCALE = 4.0;    // billboard radius multiplier over atom radius (covers falloff)
 const META_FALLOFF_RADIUS_SQ = 1.0;  // squared falloff radius for polynomial kernel
-const META_DENSITY_THRESHOLD = 0.3;  // iso-surface threshold in composite (lower = skin extends further)
+const META_DENSITY_THRESHOLD = 0.2;  // iso-surface threshold in composite (lower = skin extends further)
 const META_NORMAL_EPSILON = 0.003;   // screen-space epsilon for density gradient normals
 
 const RAYCAST_THRESHOLD = 0.4;
@@ -1198,6 +1200,55 @@ async function loadSkinTextureSet(name) {
 }
 
 // ---------------------------------------------------------------------------
+// SYNTHETIC ENVIRONMENT MAP — studio-style HDR for reflections
+// ---------------------------------------------------------------------------
+
+function createEnvMapTexture() {
+  const w = ENV_MAP_SIZE, h = ENV_MAP_SIZE / 2;
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+
+  // Dark gradient background (sky → ground)
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, '#1a1a2e');    // dark blue sky top
+  grad.addColorStop(0.35, '#2d2d44'); // mid sky
+  grad.addColorStop(0.5, '#3a3a50');  // horizon
+  grad.addColorStop(0.65, '#1a1a1a'); // ground
+  grad.addColorStop(1, '#0a0a0a');    // dark ground
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+
+  // Bright studio light spots (these create the "glistening" reflections)
+  function addLight(cx, cy, radius, intensity, r, g, b) {
+    const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+    grd.addColorStop(0, `rgba(${r},${g},${b},${intensity})`);
+    grd.addColorStop(0.3, `rgba(${r},${g},${b},${intensity * 0.5})`);
+    grd.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grd;
+    ctx.fillRect(cx - radius, cy - radius, radius * 2, radius * 2);
+  }
+
+  // Key light — warm, bright, upper-right
+  addLight(w * 0.7, h * 0.2, w * 0.15, 1.0, 255, 245, 220);
+  // Fill light — cool, softer, upper-left
+  addLight(w * 0.2, h * 0.25, w * 0.12, 0.6, 200, 210, 255);
+  // Rim light — white, behind
+  addLight(w * 0.5, h * 0.1, w * 0.1, 0.8, 255, 255, 255);
+  // Ground bounce — warm, below
+  addLight(w * 0.5, h * 0.75, w * 0.25, 0.3, 180, 160, 140);
+  // Secondary highlight — adds asymmetry
+  addLight(w * 0.85, h * 0.35, w * 0.08, 0.5, 255, 230, 200);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// ---------------------------------------------------------------------------
 // METABALL DENSITY PASS — instanced camera-facing billboards
 // ---------------------------------------------------------------------------
 
@@ -1377,6 +1428,10 @@ function initMetaballPipeline() {
   const goldRoughness = getSkinTex('translucent-wobbly-gold', 'roughness', fallbackRoughness);
   const goldMetalness = getSkinTex('translucent-wobbly-gold', 'metalness', fallbackMetalness);
 
+  // ---- Environment map for reflections ----
+  const envMapTex = createEnvMapTexture();
+  renderer.initTexture(envMapTex);
+
   // ---- Composite shader (pass 4) — triplanar PBR ----
   const compositeMat = new NodeMaterial();
   compositeMat.transparent = true;
@@ -1483,17 +1538,34 @@ function initMetaballPipeline() {
 
   // Diffuse modulated by metalness: diffuse *= (1 - metalness)
   const diffuseFactor = float(1.0).sub(finalMetalness);
-  const keyContrib = vec3(1.0, 0.957, 0.878).mul(keyDot).mul(0.5).mul(diffuseFactor);
-  const fillContrib = vec3(0.753, 0.816, 1.0).mul(fillDot).mul(0.25).mul(diffuseFactor);
-  const rimContrib = vec3(1.0, 1.0, 1.0).mul(rimDot).mul(0.3).mul(diffuseFactor);
+  const KEY_INTENSITY = 0.9;
+  const FILL_INTENSITY = 0.45;
+  const RIM_INTENSITY = 0.5;
+  const keyContrib = vec3(1.0, 0.957, 0.878).mul(keyDot).mul(KEY_INTENSITY).mul(diffuseFactor);
+  const fillContrib = vec3(0.753, 0.816, 1.0).mul(fillDot).mul(FILL_INTENSITY).mul(diffuseFactor);
+  const rimContrib = vec3(1.0, 1.0, 1.0).mul(rimDot).mul(RIM_INTENSITY).mul(diffuseFactor);
 
   // Specular tinted by base color for metals
   const DIELECTRIC_F0 = 0.04;
+  const SPEC_INTENSITY = 0.8;
   const specColor = tintedAlbedo.mul(finalMetalness).add(vec3(DIELECTRIC_F0, DIELECTRIC_F0, DIELECTRIC_F0).mul(float(1.0).sub(finalMetalness)));
-  const specTotal = specColor.mul(keySpec.add(fillSpec).add(rimSpec)).mul(0.5);
+  const specTotal = specColor.mul(keySpec.add(fillSpec).add(rimSpec)).mul(SPEC_INTENSITY);
 
-  const ambient = vec3(0.15, 0.15, 0.18);
-  const litColor = tintedAlbedo.mul(ambient.add(keyContrib).add(fillContrib).add(rimContrib)).add(specTotal);
+  const ambient = vec3(0.25, 0.25, 0.28);
+  const directLight = tintedAlbedo.mul(ambient.add(keyContrib).add(fillContrib).add(rimContrib)).add(specTotal);
+
+  // Environment map reflections — equirectangular sampling
+  const reflDir = viewDir.negate().reflect(perturbedNormal);
+  // Equirect UV from reflection direction: u = atan2(x, z) / 2π + 0.5, v = asin(y) / π + 0.5
+  const envU = reflDir.x.atan2(reflDir.z).div(float(Math.PI * 2)).add(0.5);
+  const envV = reflDir.y.asin().div(float(Math.PI)).add(0.5);
+  const envSample = texture(envMapTex, vec2(envU, envV));
+
+  // Environment reflection strength: metals reflect environment fully, dielectrics barely
+  const envReflectance = specColor.mul(float(ENV_REFLECTION_STRENGTH));
+  const envContrib = envSample.rgb.mul(envReflectance);
+
+  const litColor = directLight.add(envContrib);
 
   // Edge glow near iso-threshold
   const edgeFactor = float(1.0).sub(d.sub(densityThresholdUniform).div(float(0.3)).clamp(0.0, 1.0));
