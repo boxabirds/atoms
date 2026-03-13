@@ -60,6 +60,38 @@ await slider.dispatchEvent('input');
 await page.waitForTimeout(1000);
 await page.screenshot({ path: '/tmp/meta-6-opacity-80.png' });
 
+// --- Phase 2: PBR texture test ---
+// Switch to select tool, then double-click an atom to open skin picker
+await page.locator('#select-tool-btn').click();
+await page.waitForTimeout(500);
+
+// Double-click on walker atoms (around 500, 400)
+await page.mouse.dblclick(500, 400);
+await page.waitForTimeout(1000);
+await page.screenshot({ path: '/tmp/meta-7-skin-picker.png' });
+
+// Select "rusty-and-warped" from the skin picker dropdown
+const skinSelect = page.locator('#skin-select');
+const pickerVisible = await page.locator('#skin-picker').isVisible();
+if (pickerVisible) {
+  await skinSelect.selectOption('rusty-and-warped');
+  await page.waitForTimeout(2000);
+  await page.screenshot({ path: '/tmp/meta-8-pbr-texture.png' });
+} else {
+  console.log('Skin picker not visible — trying direct click on atom center');
+  // Atoms might be slightly offset; click center of scene
+  await page.mouse.dblclick(500, 420);
+  await page.waitForTimeout(500);
+  if (await page.locator('#skin-picker').isVisible()) {
+    await skinSelect.selectOption('rusty-and-warped');
+    await page.waitForTimeout(2000);
+    await page.screenshot({ path: '/tmp/meta-8-pbr-texture.png' });
+  } else {
+    console.log('Could not open skin picker');
+    await page.screenshot({ path: '/tmp/meta-8-no-picker.png' });
+  }
+}
+
 console.log('Errors:', errors.length ? errors : 'none');
 await browser.close();
 console.log('Done — screenshots in /tmp/meta-*.png');

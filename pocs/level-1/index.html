@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ATOM — World Builder</title>
+<link rel="icon" href="data:,">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -308,8 +309,8 @@
 
 <script type="module">
 import * as THREE from 'three';
-import { triplanarTexture, texture, positionWorld, normalWorld, vec2, vec3, vec4, float, Fn, uniform, screenUV, attribute, modelViewProjection, pass, mrt, output, emissive } from 'three/tsl';
-import { NodeMaterial, PostProcessing } from 'three/webgpu';
+import { triplanarTexture, texture, positionWorld, normalWorld, vec2, vec3, vec4, float, Fn, uniform, screenUV, attribute, modelViewProjection, varying, select } from 'three/tsl';
+import { NodeMaterial } from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // ===========================================================================
@@ -322,7 +323,8 @@ const FOG_FAR = 60;
 
 const GROUND_SIZE = 40;
 const GROUND_DIVISIONS = 40;
-const GROUND_GRID_COLOR = 0x1a1a30;
+const GROUND_GRID_LINE_COLOR = '#4a4a8a';
+const GROUND_GRID_BG_COLOR = '#181838';
 const GROUND_Y = -2;
 
 const CAMERA_FOV = 50;
@@ -388,11 +390,12 @@ const VELOCITY_CAP = 8.0;            // max speed any atom can reach
 const SKIN_DEFAULT_OPACITY = 0.5;
 const SKIN_MIN_ATOMS = 2;            // minimum atoms in a molecule to get a skin
 const SKIN_TEXTURE_SCALE = 2.0;      // world-space tiling density for triplanar mapping
-const AVAILABLE_SKINS = ['none', 'rusty-and-warped'];  // extensible skin list
+const SKIN_INDEX = { 'none': 0, 'rusty-and-warped': 1, 'translucent-wobbly-gold': 2 };
+const AVAILABLE_SKINS = ['none', 'rusty-and-warped', 'translucent-wobbly-gold'];  // extensible skin list
 const META_MAX_ATOMS = 1024;         // max atoms in density pass (WebGPU uniform buffer limit: 1024 × 64B = 65536B)
-const META_BILLBOARD_SCALE = 3.0;    // billboard radius multiplier over atom radius (covers falloff)
+const META_BILLBOARD_SCALE = 3.5;    // billboard radius multiplier over atom radius (covers falloff)
 const META_FALLOFF_RADIUS_SQ = 1.0;  // squared falloff radius for polynomial kernel
-const META_DENSITY_THRESHOLD = 0.4;  // iso-surface threshold in composite
+const META_DENSITY_THRESHOLD = 0.3;  // iso-surface threshold in composite (lower = skin extends further)
 const META_NORMAL_EPSILON = 0.003;   // screen-space epsilon for density gradient normals
 
 const RAYCAST_THRESHOLD = 0.4;
@@ -548,8 +551,12 @@ let hoveredAtom = null;
 const moleculeSkins = new Map();  // molKey → { atomIds, skinType, key }
 let skinOpacity = SKIN_DEFAULT_OPACITY;
 const skinTextureCache = new Map(); // name → { albedo, normal, roughness, metalness } THREE.Texture
-let densityMesh, densityScene, postProcessing;
+let densityMesh, densityScene, densityRT, compositeQuad, compositeScene, compositeCamera;
+let worldPosMesh, worldPosScene, worldPosRT;
 let skinOpacityUniform, densityThresholdUniform;
+let debugPipeline = false;
+let debugCompositeMat = null;
+let normalCompositeMat = null;
 
 // ===========================================================================
 // UTILITIES
@@ -1152,9 +1159,12 @@ function getSkinColor(mol) {
     const a = atomMap.get(id);
     if (a) counts[a.type] = (counts[a.type] || 0) + 1;
   }
+  // Exclude FLEX from dominance — it's structural, not identity-defining.
+  // Only fall back to FLEX if the molecule is 100% FLEX.
   let dominant = 'flex';
   let maxCount = 0;
   for (const [type, count] of Object.entries(counts)) {
+    if (type === 'flex') continue;
     if (count > maxCount) { maxCount = count; dominant = type; }
   }
   const def = ATOM_DEFS[dominant];
@@ -1194,10 +1204,10 @@ async function loadSkinTextureSet(name) {
 // Instance attribute arrays (pre-allocated, updated each frame)
 const metaPositionArray = new Float32Array(META_MAX_ATOMS * 3);
 const metaRadiusArray = new Float32Array(META_MAX_ATOMS);
-const metaColorArray = new Float32Array(META_MAX_ATOMS * 4); // RGBA: rgb = color, a = density weight
+const metaColorArray = new Float32Array(META_MAX_ATOMS * 4); // RGBA: rgb = color, a = skin type index (0=none, 1=rusty, 2=gold)
 
 function initMetaballPipeline() {
-  // --- Density billboard mesh ---
+  // --- Shared billboard geometry with instanced attributes ---
   const billboardGeo = new THREE.PlaneGeometry(1, 1);
 
   const instPos = new THREE.InstancedBufferAttribute(metaPositionArray, 3);
@@ -1212,7 +1222,7 @@ function initMetaballPipeline() {
   instColor.setUsage(THREE.DynamicDrawUsage);
   billboardGeo.setAttribute('instColor', instColor);
 
-  // TSL density material — additive blending accumulates density
+  // ---- Density material (pass 2) ----
   const densityMat = new NodeMaterial();
   densityMat.transparent = true;
   densityMat.blending = THREE.CustomBlending;
@@ -1229,8 +1239,6 @@ function initMetaballPipeline() {
 
   const billboardSize = iRad.mul(float(META_BILLBOARD_SCALE));
 
-  // Camera right/up from view matrix columns
-  // element(N) = column N (vec4); row 0 = x-components, row 1 = y-components
   const vm = uniform(new THREE.Matrix4());
   const camRight = vec3(vm.element(0).x, vm.element(1).x, vm.element(2).x);
   const camUp = vec3(vm.element(0).y, vm.element(1).y, vm.element(2).y);
@@ -1250,15 +1258,16 @@ function initMetaballPipeline() {
   const falloff = float(1.0).sub(dist2).max(0.0);
   const density = falloff.mul(falloff); // (1 - r²)²
 
+  const flatCol = iCol.xyz;
+
   // Output: r=density, gba=color*density (density-weighted color accumulation)
   densityMat.colorNode = vec4(
     density,
-    iCol.x.mul(density),
-    iCol.y.mul(density),
-    iCol.z.mul(density)
+    flatCol.x.mul(density),
+    flatCol.y.mul(density),
+    flatCol.z.mul(density)
   );
 
-  // Store view matrix uniform ref for per-frame update
   densityMat.userData = { viewMatrixUniform: vm };
 
   densityMesh = new THREE.InstancedMesh(billboardGeo, densityMat, META_MAX_ATOMS);
@@ -1266,61 +1275,290 @@ function initMetaballPipeline() {
   densityMesh.frustumCulled = false;
 
   densityScene = new THREE.Scene();
-  densityScene.background = new THREE.Color(0, 0, 0); // zero density background
   densityScene.add(densityMesh);
 
-  // --- PostProcessing composite ---
-  // Both passes managed by PostProcessing for correct command ordering.
+  // ---- WorldPos material (pass 3) ----
+  // Same billboard geometry (shared instanced attributes), different fragment output.
+  // TSL attribute/uniform nodes are per-material — must redefine them.
+  const worldPosMat = new NodeMaterial();
+  worldPosMat.transparent = true;
+  worldPosMat.blending = THREE.CustomBlending;
+  worldPosMat.blendSrc = THREE.OneFactor;
+  worldPosMat.blendDst = THREE.OneFactor; // additive
+  worldPosMat.depthWrite = false;
+  worldPosMat.depthTest = false;
+  worldPosMat.side = THREE.DoubleSide;
+
+  const wp_iPos = attribute('instPos');
+  const wp_iRad = attribute('instRadius');
+  const wp_iCol = attribute('instColor');
+  const wp_billboardSize = wp_iRad.mul(float(META_BILLBOARD_SCALE));
+
+  const wp_vm = uniform(new THREE.Matrix4());
+  const wp_camRight = vec3(wp_vm.element(0).x, wp_vm.element(1).x, wp_vm.element(2).x);
+  const wp_camUp = vec3(wp_vm.element(0).y, wp_vm.element(1).y, wp_vm.element(2).y);
+
+  const wp_localPos = attribute('position');
+  const wp_worldPos = wp_iPos
+    .add(wp_camRight.mul(wp_localPos.x).mul(wp_billboardSize))
+    .add(wp_camUp.mul(wp_localPos.y).mul(wp_billboardSize));
+
+  worldPosMat.positionNode = wp_worldPos;
+
+  // Pass world position to fragment via varying
+  const vWorldPos = varying(wp_worldPos, 'v_wp');
+
+  // Same density computation for weighting
+  const wp_uvAttr = attribute('uv');
+  const wp_centeredUV = wp_uvAttr.sub(vec2(0.5, 0.5)).mul(2.0);
+  const wp_dist2 = wp_centeredUV.x.mul(wp_centeredUV.x).add(wp_centeredUV.y.mul(wp_centeredUV.y));
+  const wp_falloff = float(1.0).sub(wp_dist2).max(0.0);
+  const wp_density = wp_falloff.mul(wp_falloff);
+
+  // Output: RGB = worldPos × density, A = skinTypeIndex × density
+  worldPosMat.colorNode = vec4(
+    vWorldPos.x.mul(wp_density),
+    vWorldPos.y.mul(wp_density),
+    vWorldPos.z.mul(wp_density),
+    wp_iCol.w.mul(wp_density)
+  );
+
+  worldPosMat.userData = { viewMatrixUniform: wp_vm };
+
+  worldPosMesh = new THREE.InstancedMesh(billboardGeo, worldPosMat, META_MAX_ATOMS);
+  worldPosMesh.count = 0;
+  worldPosMesh.frustumCulled = false;
+
+  worldPosScene = new THREE.Scene();
+  worldPosScene.add(worldPosMesh);
+
+  // ---- Render targets ----
   skinOpacityUniform = uniform(float(SKIN_DEFAULT_OPACITY));
   densityThresholdUniform = uniform(float(META_DENSITY_THRESHOLD));
 
-  postProcessing = new PostProcessing(renderer);
+  const w = window.innerWidth, h = window.innerHeight;
+  densityRT = new THREE.RenderTarget(w, h, {
+    type: THREE.HalfFloatType,
+    magFilter: THREE.LinearFilter,
+    minFilter: THREE.LinearFilter
+  });
+  worldPosRT = new THREE.RenderTarget(w, h, {
+    type: THREE.HalfFloatType,
+    magFilter: THREE.LinearFilter,
+    minFilter: THREE.LinearFilter
+  });
 
-  // Scene pass
-  const scenePass = pass(scene, camera);
-  const sceneColor = scenePass.getTextureNode();
+  // ---- Texture loading for all skins ----
+  function makeFallbackTex(r, g, b, a) {
+    const t = new THREE.DataTexture(new Uint8Array([r, g, b, a]), 1, 1, THREE.RGBAFormat);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.needsUpdate = true;
+    return t;
+  }
+  const fallbackAlbedo = makeFallbackTex(128, 128, 128, 255);
+  const fallbackNormal = makeFallbackTex(128, 128, 255, 255);   // flat normal
+  const fallbackRoughness = makeFallbackTex(128, 128, 128, 255); // 0.5 roughness
+  const fallbackMetalness = makeFallbackTex(0, 0, 0, 255);       // non-metallic
 
-  // Density pass — also managed by PostProcessing (guarantees ordering)
-  const densityPass = pass(densityScene, camera);
-  const densityColor = densityPass.getTextureNode();
+  function getSkinTex(skinName, mapType, fallback) {
+    const cached = skinTextureCache.get(skinName);
+    const tex = cached?.[mapType];
+    if (tex) { tex.needsUpdate = true; renderer.initTexture(tex); return tex; }
+    return fallback;
+  }
 
-  // Composite: scene + colored skin where density > threshold
+  const rustyAlbedo = getSkinTex('rusty-and-warped', 'albedo', fallbackAlbedo);
+  const rustyNormal = getSkinTex('rusty-and-warped', 'normal', fallbackNormal);
+  const rustyRoughness = getSkinTex('rusty-and-warped', 'roughness', fallbackRoughness);
+  const rustyMetalness = getSkinTex('rusty-and-warped', 'metalness', fallbackMetalness);
+
+  const goldAlbedo = getSkinTex('translucent-wobbly-gold', 'albedo', fallbackAlbedo);
+  const goldNormal = getSkinTex('translucent-wobbly-gold', 'normal', fallbackNormal);
+  const goldRoughness = getSkinTex('translucent-wobbly-gold', 'roughness', fallbackRoughness);
+  const goldMetalness = getSkinTex('translucent-wobbly-gold', 'metalness', fallbackMetalness);
+
+  // ---- Composite shader (pass 4) — triplanar PBR ----
+  const compositeMat = new NodeMaterial();
+  compositeMat.transparent = true;
+  compositeMat.depthTest = false;
+  compositeMat.depthWrite = false;
+
+  const rawUV = attribute('uv');
+  const uvNode = vec2(rawUV.x, float(1.0).sub(rawUV.y)); // Y-flip: RT vs screen convention in WebGPU
+  const densityColor = texture(densityRT.texture, uvNode);
+  const wpColor = texture(worldPosRT.texture, uvNode);
+
+  // Density-weighted color reconstruction
   const d = densityColor.r;
   const rawColor = vec3(densityColor.g, densityColor.b, densityColor.a);
   const skinBaseColor = rawColor.div(d.max(0.001));
 
+  // Reconstruct world position and skin type from worldPosRT
+  const wp = vec3(wpColor.r, wpColor.g, wpColor.b).div(d.max(0.001));
+  const skinId = wpColor.a.div(d.max(0.001)).round();
+
   // Pseudo-normal from density gradient
   const eps = float(META_NORMAL_EPSILON);
-  const dLeft = densityColor.sample(screenUV.sub(vec2(eps, 0.0))).r;
-  const dRight = densityColor.sample(screenUV.add(vec2(eps, 0.0))).r;
-  const dDown = densityColor.sample(screenUV.sub(vec2(0.0, eps))).r;
-  const dUp = densityColor.sample(screenUV.add(vec2(0.0, eps))).r;
+  const dLeft = texture(densityRT.texture, uvNode.sub(vec2(eps, 0.0))).r;
+  const dRight = texture(densityRT.texture, uvNode.add(vec2(eps, 0.0))).r;
+  const dDown = texture(densityRT.texture, uvNode.sub(vec2(0.0, eps))).r;
+  const dUp = texture(densityRT.texture, uvNode.add(vec2(0.0, eps))).r;
   const gradX = dRight.sub(dLeft);
   const gradY = dUp.sub(dDown);
-  const pseudoNormal = vec3(gradX.negate(), gradY.negate(), float(0.15)).normalize();
+  // Y gradient sign: UV Y is flipped relative to screen Y, so negate gradY differently
+  const pseudoNormal = vec3(gradX.negate(), gradY, float(0.15)).normalize();
 
-  // 3-point lighting
+  // Triplanar blend weights from pseudo-normal
+  const absN = vec3(pseudoNormal.x.abs(), pseudoNormal.y.abs(), pseudoNormal.z.abs());
+  const wSum = absN.x.add(absN.y).add(absN.z);
+  const tw = absN.div(wSum);
+
+  // Triplanar UVs from reconstructed world position
+  const triScale = float(SKIN_TEXTURE_SCALE);
+  const uvYZ = vec2(wp.y, wp.z).mul(triScale);
+  const uvXZ = vec2(wp.x, wp.z).mul(triScale);
+  const uvXY = vec2(wp.x, wp.y).mul(triScale);
+
+  // Helper: triplanar sample for a given texture
+  function triSample(tex) {
+    return texture(tex, uvYZ).mul(tw.x)
+      .add(texture(tex, uvXZ).mul(tw.y))
+      .add(texture(tex, uvXY).mul(tw.z));
+  }
+
+  // Triplanar samples for rusty-and-warped (skin type 1)
+  const rustyAlbedoSample = triSample(rustyAlbedo);
+  const rustyNormalSample = triSample(rustyNormal);
+  const rustyRoughnessSample = triSample(rustyRoughness);
+  const rustyMetalnessSample = triSample(rustyMetalness);
+
+  // Triplanar samples for translucent-wobbly-gold (skin type 2)
+  const goldAlbedoSample = triSample(goldAlbedo);
+  const goldNormalSample = triSample(goldNormal);
+  const goldRoughnessSample = triSample(goldRoughness);
+  const goldMetalnessSample = triSample(goldMetalness);
+
+  // Per-pixel skin selection via select() chain (avoids TSL mix() precision bugs)
+  const isType1 = skinId.equal(float(1));
+  const isType2 = skinId.equal(float(2));
+
+  const finalAlbedo = select(isType1, rustyAlbedoSample.rgb, select(isType2, goldAlbedoSample.rgb, skinBaseColor));
+  const finalNormalMap = select(isType1, rustyNormalSample.rgb, select(isType2, goldNormalSample.rgb, vec3(0.5, 0.5, 1.0)));
+  const finalRoughness = select(isType1, rustyRoughnessSample.r, select(isType2, goldRoughnessSample.r, float(0.5)));
+  const finalMetalness = select(isType1, rustyMetalnessSample.r, select(isType2, goldMetalnessSample.r, float(0.0)));
+
+  // Tint albedo by molecule color (like CPU version)
+  const hasSkin = skinId.greaterThan(float(0.5));
+  const moleculeTint = skinBaseColor;
+  const tintedAlbedo = select(hasSkin, finalAlbedo.mul(moleculeTint), skinBaseColor);
+
+  // Normal map perturbation: decode from 0..1 to -1..1, add to pseudo-normal
+  const NORMAL_MAP_STRENGTH = 0.5;
+  const normalOffset = finalNormalMap.sub(vec3(0.5, 0.5, 0.5)).mul(float(NORMAL_MAP_STRENGTH));
+  const perturbedNormal = select(hasSkin, pseudoNormal.add(normalOffset).normalize(), pseudoNormal);
+
+  // 3-point lighting with PBR modulation
   const keyDir = vec3(0.49, 0.49, 0.61).normalize();
   const fillDir = vec3(-0.74, 0.37, 0.56).normalize();
   const rimDir = vec3(0.0, 0.41, -0.82).normalize();
-  const keyDot = pseudoNormal.dot(keyDir).max(0.0);
-  const fillDot = pseudoNormal.dot(fillDir).max(0.0);
-  const rimDot = pseudoNormal.dot(rimDir).max(0.0);
-  const keyContrib = vec3(1.0, 0.957, 0.878).mul(keyDot).mul(0.5);
-  const fillContrib = vec3(0.753, 0.816, 1.0).mul(fillDot).mul(0.25);
-  const rimContrib = vec3(1.0, 1.0, 1.0).mul(rimDot).mul(0.3);
+
+  const keyDot = perturbedNormal.dot(keyDir).max(0.0);
+  const fillDot = perturbedNormal.dot(fillDir).max(0.0);
+  const rimDot = perturbedNormal.dot(rimDir).max(0.0);
+
+  // Specular: Blinn-Phong NdotH approximation (view ≈ (0,0,1) in screen space)
+  const viewDir = vec3(0.0, 0.0, 1.0);
+  const keyHalf = keyDir.add(viewDir).normalize();
+  const fillHalf = fillDir.add(viewDir).normalize();
+  const rimHalf = rimDir.add(viewDir).normalize();
+
+  // specPower = mix(8, 128, 1-roughness)
+  const SPEC_POWER_MIN = 8.0;
+  const SPEC_POWER_MAX = 128.0;
+  const specPower = float(SPEC_POWER_MIN).add(float(1.0).sub(finalRoughness).mul(float(SPEC_POWER_MAX - SPEC_POWER_MIN)));
+
+  const keySpec = perturbedNormal.dot(keyHalf).max(0.0).pow(specPower);
+  const fillSpec = perturbedNormal.dot(fillHalf).max(0.0).pow(specPower);
+  const rimSpec = perturbedNormal.dot(rimHalf).max(0.0).pow(specPower);
+
+  // Diffuse modulated by metalness: diffuse *= (1 - metalness)
+  const diffuseFactor = float(1.0).sub(finalMetalness);
+  const keyContrib = vec3(1.0, 0.957, 0.878).mul(keyDot).mul(0.5).mul(diffuseFactor);
+  const fillContrib = vec3(0.753, 0.816, 1.0).mul(fillDot).mul(0.25).mul(diffuseFactor);
+  const rimContrib = vec3(1.0, 1.0, 1.0).mul(rimDot).mul(0.3).mul(diffuseFactor);
+
+  // Specular tinted by base color for metals
+  const DIELECTRIC_F0 = 0.04;
+  const specColor = tintedAlbedo.mul(finalMetalness).add(vec3(DIELECTRIC_F0, DIELECTRIC_F0, DIELECTRIC_F0).mul(float(1.0).sub(finalMetalness)));
+  const specTotal = specColor.mul(keySpec.add(fillSpec).add(rimSpec)).mul(0.5);
+
   const ambient = vec3(0.15, 0.15, 0.18);
-  const litColor = skinBaseColor.mul(ambient.add(keyContrib).add(fillContrib).add(rimContrib));
+  const litColor = tintedAlbedo.mul(ambient.add(keyContrib).add(fillContrib).add(rimContrib)).add(specTotal);
 
   // Edge glow near iso-threshold
   const edgeFactor = float(1.0).sub(d.sub(densityThresholdUniform).div(float(0.3)).clamp(0.0, 1.0));
-  const skinColor = litColor.add(skinBaseColor.mul(edgeFactor).mul(0.1));
+  const skinColor = litColor.add(tintedAlbedo.mul(edgeFactor).mul(0.1));
 
-  // Smooth blend where density crosses threshold
+  // Skin alpha: transparent where density < threshold
   const skinAlpha = d.sub(densityThresholdUniform).mul(float(5.0)).clamp(0.0, 1.0).mul(skinOpacityUniform);
-  const blended = sceneColor.rgb.mix(skinColor, skinAlpha);
 
-  postProcessing.outputNode = vec4(blended, float(1.0));
+  compositeMat.colorNode = vec4(skinColor, skinAlpha);
+
+  // Fullscreen quad: ortho camera + plane covering NDC -1..1
+  compositeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  compositeQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), compositeMat);
+  compositeScene = new THREE.Scene();
+  compositeScene.add(compositeQuad);
+
+  // --- Debug composite material ---
+  normalCompositeMat = compositeMat;
+
+  debugCompositeMat = new NodeMaterial();
+  debugCompositeMat.transparent = false;
+  debugCompositeMat.depthTest = false;
+  debugCompositeMat.depthWrite = false;
+
+  const dbgRawUV = attribute('uv');
+  const dbgUV = vec2(dbgRawUV.x, float(1.0).sub(dbgRawUV.y)); // screen-space layout
+
+  const sRight = float(0.5).step(dbgUV.x);
+  const sTop = float(0.5).step(dbgUV.y);
+
+  const localU = dbgUV.x.mul(2.0).sub(sRight);
+  const localV = dbgUV.y.mul(2.0).sub(sTop);
+  const localUV = vec2(localU, float(1.0).sub(localV)); // flip back for RT sampling
+
+  // Sample density RT at the local UV for this quadrant
+  const dbgQ = texture(densityRT.texture, localUV);
+  // Sample worldPos RT at the local UV
+  const dbgWP = texture(worldPosRT.texture, localUV);
+
+  // Top-left: raw density RT RGB
+  const tlColor = vec3(dbgQ.r, dbgQ.g, dbgQ.b);
+
+  // Top-right: worldPosRT RGB (world position × density)
+  const trColor = vec3(dbgWP.r.abs(), dbgWP.g.abs(), dbgWP.b.abs()).mul(0.3);
+
+  // Bottom-left: reconstructed base color (GBA / R)
+  const dbgD = dbgQ.r.max(0.001);
+  const blColor = vec3(dbgQ.g.div(dbgD), dbgQ.b.div(dbgD), dbgQ.a.div(dbgD));
+
+  // Bottom-right: reconstructed skin type ID as heat map
+  const dbgSkinId = dbgWP.a.div(dbgD);
+  const brColor = vec3(dbgSkinId.mul(0.5), float(0.2), float(1.0).sub(dbgSkinId.mul(0.5)));
+
+  const topRow = tlColor.mul(float(1.0).sub(sRight)).add(trColor.mul(sRight));
+  const botRow = blColor.mul(float(1.0).sub(sRight)).add(brColor.mul(sRight));
+  const dbgFinal = botRow.mul(float(1.0).sub(sTop)).add(topRow.mul(sTop));
+
+  const LINE_HALF_WIDTH = 0.003;
+  const hLine = dbgUV.y.sub(0.5).abs().step(LINE_HALF_WIDTH);
+  const vLine = dbgUV.x.sub(0.5).abs().step(LINE_HALF_WIDTH);
+  const lineAlpha = hLine.max(vLine);
+  const lineColor = vec3(0.3, 0.3, 0.3);
+  const finalWithLines = dbgFinal.mul(float(1.0).sub(lineAlpha)).add(lineColor.mul(lineAlpha));
+
+  debugCompositeMat.colorNode = vec4(finalWithLines, 1.0);
 }
 
 function updateSkinOpacity() {
@@ -1350,6 +1588,11 @@ function uploadMetaballData() {
     const g = ((skinCol.color >> 8) & 0xff) / 255;
     const b = (skinCol.color & 0xff) / 255;
 
+    // Per-molecule skin type index: GPU uses this to select texture set
+    const skinEntry = moleculeSkins.get(key);
+    const skinType = skinEntry ? skinEntry.skinType : 'none';
+    const skinTypeIndex = SKIN_INDEX[skinType] || 0;
+
     for (const id of mol) {
       if (idx >= META_MAX_ATOMS) break;
       const a = atomMap.get(id);
@@ -1360,14 +1603,14 @@ function uploadMetaballData() {
       metaPositionArray[i3] = pos.x;
       metaPositionArray[i3 + 1] = pos.y;
       metaPositionArray[i3 + 2] = pos.z;
-      metaRadiusArray[idx] = a.type === 'flex' ? FLEX_RADIUS : ATOM_RADIUS;
+      // FLEX capsule: use radius that covers the capsule half-length + cap radius
+      metaRadiusArray[idx] = a.type === 'flex' ? (FLEX_RADIUS + FLEX_LENGTH * 0.5) : ATOM_RADIUS;
 
       const i4 = idx * 4;
       metaColorArray[i4] = r;
       metaColorArray[i4 + 1] = g;
       metaColorArray[i4 + 2] = b;
-      metaColorArray[i4 + 3] = 1.0;
-
+      metaColorArray[i4 + 3] = skinTypeIndex;
       idx++;
     }
   }
@@ -1378,6 +1621,7 @@ function uploadMetaballData() {
   }
 
   densityMesh.count = idx;
+  worldPosMesh.count = idx;
 
   const geo = densityMesh.geometry;
   geo.getAttribute('instPos').needsUpdate = true;
@@ -1602,11 +1846,12 @@ async function init() {
   renderer = new THREE.WebGPURenderer({ antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setClearColor(BG_COLOR);
+  renderer.setClearColor(BG_COLOR, 1);
   document.body.insertBefore(renderer.domElement, document.body.firstChild);
   await renderer.init();
 
   scene = new THREE.Scene();
+  scene.background = new THREE.Color(BG_COLOR);
   scene.fog = new THREE.Fog(BG_COLOR, FOG_NEAR, FOG_FAR);
 
   camera = new THREE.PerspectiveCamera(CAMERA_FOV, window.innerWidth / window.innerHeight, CAMERA_NEAR, CAMERA_FAR);
@@ -1631,29 +1876,46 @@ async function init() {
   rimLight.position.set(...RIM_LIGHT_POS);
   scene.add(rimLight);
 
-  const grid = new THREE.GridHelper(GROUND_SIZE, GROUND_DIVISIONS, GROUND_GRID_COLOR, GROUND_GRID_COLOR);
-  grid.position.y = GROUND_Y;
-  grid.material.opacity = 0.3;
-  grid.material.transparent = true;
-  scene.add(grid);
+  // Ground plane with grid pattern via canvas texture (GridHelper doesn't render on WebGPU)
+  const gridCanvas = document.createElement('canvas');
+  const GRID_TEX_SIZE = 1024;
+  gridCanvas.width = GRID_TEX_SIZE;
+  gridCanvas.height = GRID_TEX_SIZE;
+  const ctx = gridCanvas.getContext('2d');
+  ctx.fillStyle = GROUND_GRID_BG_COLOR;
+  ctx.fillRect(0, 0, GRID_TEX_SIZE, GRID_TEX_SIZE);
+  ctx.strokeStyle = GROUND_GRID_LINE_COLOR;
+  ctx.lineWidth = 2;
+  const cellSize = GRID_TEX_SIZE / GROUND_DIVISIONS;
+  for (let i = 0; i <= GROUND_DIVISIONS; i++) {
+    const p = i * cellSize;
+    ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, GRID_TEX_SIZE); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(GRID_TEX_SIZE, p); ctx.stroke();
+  }
+  const gridTexture = new THREE.CanvasTexture(gridCanvas);
+  gridTexture.wrapS = gridTexture.wrapT = THREE.RepeatWrapping;
 
   const gm = new THREE.Mesh(
     new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE),
-    new THREE.MeshStandardMaterial({ color: 0x0d0d1a, roughness: 0.9, transparent: true, opacity: 0.5 })
+    new THREE.MeshStandardMaterial({
+      map: gridTexture, roughness: 0.9
+    })
   );
   gm.rotation.x = -Math.PI / 2;
-  gm.position.y = GROUND_Y;
-  gm.userData.isGround = true;
-  scene.add(gm);
+  const groundGroup = new THREE.Group();
+  groundGroup.position.y = GROUND_Y;
+  groundGroup.add(gm);
+  groundGroup.userData.isGround = true;
+  scene.add(groundGroup);
 
   buildPalette();
   buildMachinesPanel();
   setupEvents();
   updateFreezeUI();
 
-  // Preload all available skin texture sets
+  // Preload all available skin texture sets before building pipeline
   for (const name of AVAILABLE_SKINS) {
-    if (name !== 'none') loadSkinTextureSet(name);
+    if (name !== 'none') await loadSkinTextureSet(name);
   }
 
   // Initialize metaball pipeline (density pass + composite)
@@ -2022,6 +2284,13 @@ function onKeyDown(e) {
     if (hoveredAtom) { removeAtom(hoveredAtom.id); showToast('Removed ' + ATOM_DEFS[hoveredAtom.type].name); hoveredAtom = null; }
   }
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); }
+  if (e.key === 'd' || e.key === 'D') {
+    debugPipeline = !debugPipeline;
+    if (compositeQuad && debugCompositeMat && normalCompositeMat) {
+      compositeQuad.material = debugPipeline ? debugCompositeMat : normalCompositeMat;
+    }
+    showToast(debugPipeline ? 'Debug pipeline: ON' : 'Debug pipeline: OFF');
+  }
 }
 
 function onResize() {
@@ -2029,6 +2298,8 @@ function onResize() {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
+  if (densityRT) densityRT.setSize(w, h);
+  if (worldPosRT) worldPosRT.setSize(w, h);
 }
 
 function findAtomUnderRay() {
@@ -2058,7 +2329,7 @@ function undo() {
 
 let lastTime = performance.now();
 
-function animate() {
+async function animate() {
   requestAnimationFrame(animate);
   const now = performance.now();
   const dt = Math.min((now - lastTime) / 1000, 0.05);
@@ -2081,15 +2352,35 @@ function animate() {
   // Upload density data and update billboard orientation
   if (skinOpacity > 0) {
     uploadMetaballData();
-    const densityMat = densityMesh.material;
-    if (densityMat.userData.viewMatrixUniform) {
-      camera.updateMatrixWorld(true);
-      densityMat.userData.viewMatrixUniform.value.copy(camera.matrixWorldInverse);
-    }
+    camera.updateMatrixWorld(true);
+    // Update BOTH materials' view matrix uniforms
+    densityMesh.material.userData.viewMatrixUniform.value.copy(camera.matrixWorldInverse);
+    worldPosMesh.material.userData.viewMatrixUniform.value.copy(camera.matrixWorldInverse);
   }
 
-  // PostProcessing handles: scene render → density render → composite → screen
-  postProcessing.renderAsync();
+  // 1. Render scene directly to screen (ground, atoms, lights — everything)
+  renderer.setRenderTarget(null);
+  await renderer.renderAsync(scene, camera);
+
+  // 2-4. Density RT → WorldPos RT → Composite overlay
+  if (skinOpacity > 0) {
+    renderer.setClearColor(0x000000, 0);
+
+    // 2. Density billboards → densityRT
+    renderer.setRenderTarget(densityRT);
+    await renderer.renderAsync(densityScene, camera);
+
+    // 3. WorldPos billboards → worldPosRT
+    renderer.setRenderTarget(worldPosRT);
+    await renderer.renderAsync(worldPosScene, camera);
+
+    // 4. Composite skin overlay onto screen (no clear — preserve pass 1 scene)
+    renderer.setClearColor(BG_COLOR, 1);
+    renderer.setRenderTarget(null);
+    renderer.autoClear = false;
+    await renderer.renderAsync(compositeScene, compositeCamera);
+    renderer.autoClear = true;
+  }
 }
 
 // ===========================================================================
