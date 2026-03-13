@@ -1508,7 +1508,7 @@ function initMetaballPipeline() {
   const tintedAlbedo = select(hasSkin, finalAlbedo.mul(moleculeTint), skinBaseColor);
 
   // Normal map perturbation: decode from 0..1 to -1..1, add to pseudo-normal
-  const NORMAL_MAP_STRENGTH = 0.5;
+  const NORMAL_MAP_STRENGTH = 1.5; // strong perturbation for visible surface detail
   const normalOffset = finalNormalMap.sub(vec3(0.5, 0.5, 0.5)).mul(float(NORMAL_MAP_STRENGTH));
   const perturbedNormal = select(hasSkin, pseudoNormal.add(normalOffset).normalize(), pseudoNormal);
 
