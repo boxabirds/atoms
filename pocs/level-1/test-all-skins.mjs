@@ -64,20 +64,14 @@ for (let i = 1; i < SKINS.length; i++) {
       await t.loadSkinFromJSON(reg.name, reg.path);
     }
 
-    // Ensure displacement geometry
-    await t.ensureDisplacementData(name);
-
-    // Set skin type and recreate material + geometry
+    // Set skin type and recreate material
     entry.skinType = name;
     const skinCol = t.getSkinColor(entry.atomIds);
     const newMat = t.createSkinMaterial(name, skinCol.color);
     if (entry.material) entry.material.dispose();
     entry.material = newMat;
-    const geom = t.getSkinGeometry(name);
-    for (const mesh of (entry.meshes || [])) {
-      mesh.geometry = geom;
-      mesh.material = newMat;
-    }
+    // Update MarchingCubes material
+    if (entry.mc) entry.mc.material = newMat;
 
     return 'ok';
   }, skinName);

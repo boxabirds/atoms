@@ -129,6 +129,30 @@
     box-shadow: 0 0 6px rgba(79, 195, 247, 0.4);
   }
 
+  /* ---- Toolbar dropdown ---- */
+  .toolbar-dropdown {
+    display: flex; flex-direction: column; gap: 4px;
+    padding: 4px 4px 2px;
+  }
+  .toolbar-dropdown .dropdown-label {
+    font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 1px;
+  }
+  .toolbar-dropdown select {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    color: #ccc; font-size: 11px;
+    padding: 4px 6px;
+    outline: none; cursor: pointer;
+    -webkit-appearance: none; appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23666'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+    padding-right: 20px;
+  }
+  .toolbar-dropdown select:hover { border-color: rgba(79, 195, 247, 0.3); }
+  .toolbar-dropdown select:focus { border-color: rgba(79, 195, 247, 0.5); }
+
   /* ---- Skin picker popup ---- */
   #skin-picker {
     position: fixed; display: none;
@@ -311,6 +335,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { MarchingCubesGPU, generateSphericalUVs } from './marching-cubes-gpu.mjs';
 
 // ===========================================================================
 // CONSTANTS
@@ -385,15 +410,15 @@ const ARENA_HALF = GROUND_SIZE * 0.5;
 const WALL_BOUNCE = 0.5;             // velocity retained on wall bounce
 const VELOCITY_CAP = 8.0;            // max speed any atom can reach
 
-// Skin system — screen-space metaballs
+// Skin system — GPU marching cubes isosurface
 const SKIN_DEFAULT_OPACITY = 0.5;
 const SKIN_MIN_ATOMS = 2;            // minimum atoms in a molecule to get a skin
-const SKIN_SPHERE_SEGMENTS = 32;     // subdivision for skin sphere geometry
-const SKIN_SPHERE_INFLATE = 1.15;    // inflate spheres slightly for better overlap coverage
+const SKIN_SPHERE_INFLATE = 1.15;    // inflate atom radii for metaball field
+const MC_DIRTY_THRESHOLD = 0.001;    // position change threshold to trigger MC recompute
 const DEFAULT_PNG_DISPLACEMENT_SCALE = 0.3; // displacement scale for PNG skins without explicit scalar
 const DISPLACEMENT_SCALE_MULTIPLIER = 5.0;  // boost all displacement — unit spheres need stronger displacement than aimaps
 const ENV_INTENSITY = 3.0;           // IBL environment map intensity (matches aimaps)
-const TONE_MAP_EXPOSURE = 1.8;       // tone mapping exposure (matches aimaps)
+const TONE_MAP_EXPOSURE = 0.4;       // tone mapping exposure — looks best at this level
 const SKIN_REGISTRY = [
   { name: 'none', index: 0 },
   { name: 'rusty-and-warped', index: 1, type: 'png', path: './skins/rusty-and-warped/' },
@@ -556,9 +581,13 @@ let dragAtomType = null;
 let isDraggingMachine = false;
 let hoveredAtom = null;
 
-// Skin system — real geometry per atom
-const moleculeSkins = new Map();  // molKey → { atomIds, skinType, key, material, meshes[] }
+// Skin system — GPU marching cubes mesh per molecule
+const moleculeSkins = new Map();  // molKey → { atomIds, skinType, key, material, mesh, lastPositions, computing }
 let skinOpacity = SKIN_DEFAULT_OPACITY;
+let defaultSkinType = 'none';    // applied to new molecules; merge uses larger molecule's skin
+let mcGPU = null; // MarchingCubesGPU instance, initialized after renderer.init()
+let showAtoms = true;
+let currentDisplacementMultiplier = DISPLACEMENT_SCALE_MULTIPLIER;
 const skinTextureCache = new Map(); // name → { albedo, normal, roughness, metalness, scalars } THREE.Texture
 
 // ===========================================================================
@@ -1242,10 +1271,6 @@ async function loadSkinFromJSON(name, url) {
 // CPU DISPLACEMENT — ported from aimaps/src/lib/cpu-displacement.ts
 // ---------------------------------------------------------------------------
 
-const DISP_HASH_PRECISION = 4;   // decimal places for seam vertex grouping
-const DISP_RGBA = 4;             // stride in pixel data
-const DISP_BYTE_MAX = 255;
-
 /** Decode a data-URL displacement image into raw pixel data */
 function loadDisplacementPixels(dataUrl) {
   return new Promise((resolve, reject) => {
@@ -1264,121 +1289,54 @@ function loadDisplacementPixels(dataUrl) {
   });
 }
 
-/** Sample displacement (0–1) at UV with bilinear interpolation and wrapping */
-function sampleDisplacement(data, u, v) {
-  u = ((u % 1) + 1) % 1;
-  v = ((v % 1) + 1) % 1;
-  const px = u * (data.width - 1);
-  const py = (1 - v) * (data.height - 1);
-  const x0 = Math.floor(px), y0 = Math.floor(py);
-  const x1 = Math.min(x0 + 1, data.width - 1);
-  const y1 = Math.min(y0 + 1, data.height - 1);
-  const fx = px - x0, fy = py - y0;
-  const v00 = data.pixels[(y0 * data.width + x0) * DISP_RGBA] / DISP_BYTE_MAX;
-  const v10 = data.pixels[(y0 * data.width + x1) * DISP_RGBA] / DISP_BYTE_MAX;
-  const v01 = data.pixels[(y1 * data.width + x0) * DISP_RGBA] / DISP_BYTE_MAX;
-  const v11 = data.pixels[(y1 * data.width + x1) * DISP_RGBA] / DISP_BYTE_MAX;
-  return v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) + v01 * (1 - fx) * fy + v11 * fx * fy;
-}
+// Cache of loaded displacement pixel data per skin type (async, loaded once)
+const displacementPixelCache = new Map(); // skinType → { pixels, width, height } | null
 
-/** Group vertex indices by coincident position (seam vertices) */
-function buildSeamGroups(positions) {
-  const count = positions.length / 3;
-  const map = new Map();
-  for (let i = 0; i < count; i++) {
-    const i3 = i * 3;
-    const key = `${positions[i3].toFixed(DISP_HASH_PRECISION)},${positions[i3+1].toFixed(DISP_HASH_PRECISION)},${positions[i3+2].toFixed(DISP_HASH_PRECISION)}`;
-    let group = map.get(key);
-    if (!group) { group = []; map.set(key, group); }
-    group.push(i);
-  }
-  return [...map.values()].filter(g => g.length > 1);
-}
-
-/** Displace vertices along normals, then average at seam vertices to prevent tearing */
-function displaceVertices(positions, originalPositions, normals, uvs, seamGroups, data, scale) {
-  const vertexCount = positions.length / 3;
-  for (let i = 0; i < vertexCount; i++) {
-    const d = sampleDisplacement(data, uvs[i * 2], uvs[i * 2 + 1]) * scale;
-    const i3 = i * 3;
-    positions[i3]     = originalPositions[i3]     + normals[i3]     * d;
-    positions[i3 + 1] = originalPositions[i3 + 1] + normals[i3 + 1] * d;
-    positions[i3 + 2] = originalPositions[i3 + 2] + normals[i3 + 2] * d;
-  }
-  // Force coincident seam vertices to their average displaced position
-  for (const group of seamGroups) {
-    let ax = 0, ay = 0, az = 0;
-    for (const idx of group) { const i3 = idx * 3; ax += positions[i3]; ay += positions[i3+1]; az += positions[i3+2]; }
-    ax /= group.length; ay /= group.length; az /= group.length;
-    for (const idx of group) { const i3 = idx * 3; positions[i3] = ax; positions[i3+1] = ay; positions[i3+2] = az; }
+/** Ensure displacement pixel data is loaded and cached for a skin type. Returns null if none. */
+async function ensureDisplacementPixels(skinType) {
+  if (displacementPixelCache.has(skinType)) return displacementPixelCache.get(skinType);
+  const textures = skinTextureCache.get(skinType);
+  if (!textures) { displacementPixelCache.set(skinType, null); return null; }
+  const rawScale = textures.scalars?.displacementScale ?? 0;
+  if (rawScale === 0) { displacementPixelCache.set(skinType, null); return null; }
+  const dispDataUrl = textures._displacementDataUrl;
+  if (!dispDataUrl) { displacementPixelCache.set(skinType, null); return null; }
+  try {
+    const data = await loadDisplacementPixels(dispDataUrl);
+    displacementPixelCache.set(skinType, data);
+    return data;
+  } catch {
+    displacementPixelCache.set(skinType, null);
+    return null;
   }
 }
 
-/** Average vertex normals at seam positions to prevent lighting discontinuities */
-function averageSeamNormals(normals, seamGroups) {
-  for (const group of seamGroups) {
-    let nx = 0, ny = 0, nz = 0;
-    for (const idx of group) { const i3 = idx * 3; nx += normals[i3]; ny += normals[i3+1]; nz += normals[i3+2]; }
-    const len = Math.sqrt(nx*nx + ny*ny + nz*nz);
-    if (len > 0) { nx /= len; ny /= len; nz /= len; }
-    for (const idx of group) { const i3 = idx * 3; normals[i3] = nx; normals[i3+1] = ny; normals[i3+2] = nz; }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// SKIN GEOMETRY SYSTEM — real spheres per atom with MeshPhysicalMaterial
-// ---------------------------------------------------------------------------
-
-// Shared sphere geometry for all skin meshes (unit radius, scaled per atom)
-const skinSphereGeom = new THREE.SphereGeometry(1, SKIN_SPHERE_SEGMENTS, SKIN_SPHERE_SEGMENTS);
-
-// Pre-compute pristine geometry data for CPU displacement
-const skinSphereOrigPos = new Float32Array(skinSphereGeom.getAttribute('position').array);
-const skinSphereOrigNorm = new Float32Array(skinSphereGeom.getAttribute('normal').array);
-const skinSphereUVs = skinSphereGeom.getAttribute('uv').array;
-const skinSphereSeamGroups = buildSeamGroups(skinSphereOrigPos);
-
-// Cache: skinType → { geometry, displacementData }
-const displacedGeometryCache = new Map();
-
-/** Decode and cache displacement pixel data for a skin type */
-async function ensureDisplacementData(skinType) {
-  if (displacedGeometryCache.has(skinType)) return displacedGeometryCache.get(skinType);
+/** Build displacement param object for GPU compute, or null if skin has no displacement. */
+function getDisplacementForSkin(skinType, multiplier) {
+  const pixelData = displacementPixelCache.get(skinType);
+  if (!pixelData) return null;
   const textures = skinTextureCache.get(skinType);
   if (!textures) return null;
   const rawScale = textures.scalars?.displacementScale ?? 0;
   if (rawScale === 0) return null;
-  const scale = rawScale * DISPLACEMENT_SCALE_MULTIPLIER;
-
-  // Find the displacement data URL — stored during loadSkinFromJSON
-  const dispDataUrl = textures._displacementDataUrl;
-  if (!dispDataUrl) return null;
-
-  const pixelData = await loadDisplacementPixels(dispDataUrl);
-  const geom = skinSphereGeom.clone();
-  const positions = geom.getAttribute('position').array;
-  const normals = new Float32Array(skinSphereOrigNorm);
-
-  displaceVertices(positions, skinSphereOrigPos, normals, skinSphereUVs, skinSphereSeamGroups, pixelData, scale);
-  geom.getAttribute('position').needsUpdate = true;
-
-  geom.computeVertexNormals();
-  const newNormals = geom.getAttribute('normal').array;
-  averageSeamNormals(newNormals, skinSphereSeamGroups);
-  geom.getAttribute('normal').needsUpdate = true;
-
-  geom.computeBoundingSphere();
-  geom.computeBoundingBox();
-
-  const entry = { geometry: geom, pixelData };
-  displacedGeometryCache.set(skinType, entry);
-  return entry;
+  return {
+    pixels: pixelData.pixels,
+    width: pixelData.width,
+    height: pixelData.height,
+    scale: rawScale * multiplier,
+  };
 }
 
-/** Get the geometry for a skin type — displaced if available, else pristine sphere */
-function getSkinGeometry(skinType) {
-  const cached = displacedGeometryCache.get(skinType);
-  return cached ? cached.geometry : skinSphereGeom;
+/** Slider change: mark all molecules dirty so GPU recomputes with new displacement scale */
+function applyDisplacementMultiplier(newMultiplier) {
+  currentDisplacementMultiplier = newMultiplier;
+  // Force all molecules to recompute on GPU with new displacement scale
+  for (const entry of moleculeSkins.values()) {
+    if (entry.lastPositions) {
+      entry.pendingData = entry.lastPositions;
+    }
+  }
+  driveMoleculeCompute();
 }
 
 function createSkinMaterial(skinType, moleculeColor) {
@@ -1451,24 +1409,147 @@ function createSkinMaterial(skinType, moleculeColor) {
 function updateSkinOpacity() {
   for (const entry of moleculeSkins.values()) {
     if (entry.material) entry.material.opacity = skinOpacity;
-    if (entry.meshes) {
-      for (const m of entry.meshes) m.visible = skinOpacity > 0;
-    }
+    if (entry.mesh) entry.mesh.visible = skinOpacity > 0;
   }
 }
 
+function packAtomData(mol) {
+  const atomCount = mol.length;
+  const data = new Float32Array(atomCount * 4);
+  for (let i = 0; i < atomCount; i++) {
+    const a = atomMap.get(mol[i]);
+    if (!a) continue;
+    const pos = a.group.position;
+    data[i * 4] = pos.x;
+    data[i * 4 + 1] = pos.y;
+    data[i * 4 + 2] = pos.z;
+    data[i * 4 + 3] = (a.type === 'flex'
+      ? (FLEX_RADIUS + FLEX_LENGTH * 0.5)
+      : ATOM_RADIUS) * SKIN_SPHERE_INFLATE;
+  }
+  return data;
+}
+
+function positionsChanged(current, previous) {
+  if (!previous || current.length !== previous.length) return true;
+  for (let i = 0; i < current.length; i++) {
+    if (Math.abs(current[i] - previous[i]) > MC_DIRTY_THRESHOLD) return true;
+  }
+  return false;
+}
+
+// Compute centroid from packed atom data (stride 4: x, y, z, radius)
+function centroidFromPackedData(data) {
+  const atomCount = data.length / 4;
+  let cx = 0, cy = 0, cz = 0;
+  for (let i = 0; i < atomCount; i++) {
+    cx += data[i * 4];
+    cy += data[i * 4 + 1];
+    cz += data[i * 4 + 2];
+  }
+  return { x: cx / atomCount, y: cy / atomCount, z: cz / atomCount };
+}
+
+// Compute centroid from live atom positions
+function centroidFromAtomIds(mol) {
+  let cx = 0, cy = 0, cz = 0, n = 0;
+  for (const id of mol) {
+    const a = atomMap.get(id);
+    if (!a) continue;
+    const p = a.group.position;
+    cx += p.x; cy += p.y; cz += p.z;
+    n++;
+  }
+  return n > 0 ? { x: cx / n, y: cy / n, z: cz / n } : { x: 0, y: 0, z: 0 };
+}
+
+// Self-driving compute loop: processes ONE dirty molecule at a time,
+// then immediately grabs the next via round-robin. Decoupled from
+// the render framerate so GPU throughput determines skin update rate.
+let mcComputeActive = false;
+let mcRoundRobinCounter = 0;
+
+function driveMoleculeCompute() {
+  if (mcComputeActive || !mcGPU) return;
+
+  const dirty = [...moleculeSkins.values()].filter(e => e.pendingData && !e.computing);
+  if (dirty.length === 0) return;
+
+  const entry = dirty[mcRoundRobinCounter % dirty.length];
+  mcRoundRobinCounter++;
+
+  mcComputeActive = true;
+  entry.computing = true;
+  const data = entry.pendingData;
+  entry.pendingData = null;
+  const startCentroid = centroidFromPackedData(data);
+
+  // Build GPU displacement data if skin has it
+  const dispData = getDisplacementForSkin(entry.skinType, currentDisplacementMultiplier);
+
+  mcGPU.computeMolecule(data, undefined, dispData).then(result => {
+    if (result.vertexCount > 0) {
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.BufferAttribute(result.positions, 3));
+      geom.setAttribute('normal', new THREE.BufferAttribute(result.normals, 3));
+      const uvs = generateSphericalUVs(result.positions, result.vertexCount);
+      geom.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+      geom.computeBoundingSphere();
+
+      if (entry.mesh) {
+        entry.mesh.geometry.dispose();
+        entry.mesh.geometry = geom;
+        // Reset position offset — new geometry reflects startCentroid positions
+        entry.mesh.position.set(0, 0, 0);
+      } else {
+        entry.mesh = new THREE.Mesh(geom, entry.material);
+        entry.mesh.renderOrder = 1;
+        scene.add(entry.mesh);
+      }
+
+      entry.computeCentroid = startCentroid;
+      entry.lastPositions = data;
+    }
+
+    entry.computing = false;
+    mcComputeActive = false;
+    driveMoleculeCompute();
+  }).catch(err => {
+    console.error('MC compute failed for molecule', entry.key, err);
+    entry.computing = false;
+    mcComputeActive = false;
+    driveMoleculeCompute();
+  });
+}
+
 function updateMoleculeSkins() {
+  if (!mcGPU) return;
+
   const molecules = findMolecules();
   const activeKeys = new Set();
 
   for (const mol of molecules) {
+    if (mol.length < SKIN_MIN_ATOMS) continue;
     const sortedIds = [...mol].sort((a, b) => a - b);
     const key = sortedIds.join(',');
     activeKeys.add(key);
 
     let entry = moleculeSkins.get(key);
     if (!entry) {
-      entry = { atomIds: mol, skinType: 'none', key, material: null, meshes: [] };
+      // Inherit skin from the largest contributing molecule (merge), or use default
+      let inheritedSkin = defaultSkinType;
+      let largestOverlap = 0;
+      const molSet = new Set(mol);
+      for (const existing of moleculeSkins.values()) {
+        const overlap = existing.atomIds.filter(id => molSet.has(id)).length;
+        if (overlap > largestOverlap) {
+          largestOverlap = overlap;
+          inheritedSkin = existing.skinType;
+        }
+      }
+      entry = { atomIds: mol, skinType: inheritedSkin, key, material: null, mesh: null,
+                lastPositions: null, pendingData: null, computing: false,
+                computeCentroid: null };
       moleculeSkins.set(key, entry);
     } else {
       entry.atomIds = mol;
@@ -1480,41 +1561,33 @@ function updateMoleculeSkins() {
       entry.material = createSkinMaterial(entry.skinType, skinCol.color);
     }
 
-    // Ensure correct number of meshes (one per atom)
-    const geom = getSkinGeometry(entry.skinType);
-    while (entry.meshes.length < mol.length) {
-      const mesh = new THREE.Mesh(geom, entry.material);
-      mesh.renderOrder = 1; // render after scene objects
-      scene.add(mesh);
-      entry.meshes.push(mesh);
-    }
-    while (entry.meshes.length > mol.length) {
-      const mesh = entry.meshes.pop();
-      scene.remove(mesh);
+    // Pack current atom positions + radii — mark dirty via pendingData
+    const currentData = packAtomData(mol);
+    if (positionsChanged(currentData, entry.lastPositions)) {
+      entry.pendingData = currentData;
     }
 
-    // Position and scale each sphere at its atom
-    for (let i = 0; i < mol.length; i++) {
-      const a = atomMap.get(mol[i]);
-      if (!a) continue;
-      const mesh = entry.meshes[i];
-      mesh.position.copy(a.group.position);
-      const radius = (a.type === 'flex'
-        ? (FLEX_RADIUS + FLEX_LENGTH * 0.5)
-        : ATOM_RADIUS) * SKIN_SPHERE_INFLATE;
-      mesh.scale.setScalar(radius);
-      mesh.visible = skinOpacity > 0;
+    // Per-frame centroid tracking: slide mesh to follow atoms between recomputes
+    if (entry.mesh && entry.computeCentroid) {
+      const live = centroidFromAtomIds(mol);
+      const cc = entry.computeCentroid;
+      entry.mesh.position.set(live.x - cc.x, live.y - cc.y, live.z - cc.z);
     }
+
+    if (entry.mesh) entry.mesh.visible = skinOpacity > 0;
   }
 
   // Remove stale molecules
   for (const [key, entry] of moleculeSkins.entries()) {
     if (!activeKeys.has(key)) {
-      for (const mesh of entry.meshes) scene.remove(mesh);
+      if (entry.mesh) { scene.remove(entry.mesh); entry.mesh.geometry.dispose(); }
       if (entry.material) entry.material.dispose();
       moleculeSkins.delete(key);
     }
   }
+
+  // Kick the compute loop (no-op if already active)
+  driveMoleculeCompute();
 }
 
 // Find which skin entry an atom belongs to
@@ -1553,18 +1626,21 @@ function showSkinPicker(skin, screenX, screenY) {
       await loadSkinTextureSet(newType);
     }
     skin.skinType = newType;
-    // Ensure displacement geometry is ready (async decode, cached after first load)
-    await ensureDisplacementData(newType);
+    // Pre-load displacement pixel data for the new skin
+    await ensureDisplacementPixels(newType);
     // Recreate material with new skin type
     const skinCol = getSkinColor(skin.atomIds);
     const newMat = createSkinMaterial(newType, skinCol.color);
     if (skin.material) skin.material.dispose();
     skin.material = newMat;
-    // Update geometry and material on all meshes
-    const geom = getSkinGeometry(newType);
-    for (const mesh of (skin.meshes || [])) {
-      mesh.geometry = geom;
-      mesh.material = newMat;
+    // Update MC mesh material and trigger GPU recompute with new skin's displacement
+    if (skin.mesh) {
+      skin.mesh.material = newMat;
+      // Mark dirty so GPU recomputes with the new skin's displacement map
+      if (skin.lastPositions) {
+        skin.pendingData = skin.lastPositions;
+      }
+      driveMoleculeCompute();
     }
     picker.style.display = 'none';
   };
@@ -1759,6 +1835,11 @@ async function init() {
   renderer.toneMapping = THREE.NeutralToneMapping;
   renderer.toneMappingExposure = TONE_MAP_EXPOSURE;
 
+  // Initialize GPU compute marching cubes
+  const device = renderer.backend.device;
+  mcGPU = new MarchingCubesGPU(device);
+  await mcGPU.init();
+
   scene = new THREE.Scene();
   scene.background = new THREE.Color(BG_COLOR);
   scene.fog = new THREE.Fog(BG_COLOR, FOG_NEAR, FOG_FAR);
@@ -1838,9 +1919,7 @@ async function init() {
     }
   }
 
-  // Skin system uses real geometry (MeshPhysicalMaterial) — no pipeline init needed
-
-  animate();
+  renderer.setAnimationLoop(animate);
 }
 
 // ===========================================================================
@@ -1885,7 +1964,7 @@ function buildPalette() {
     atoms.length = 0; atomMap.clear(); connections.length = 0; nextAtomId = 0; undoHistory.length = 0;
     // Clean up skin meshes
     for (const entry of moleculeSkins.values()) {
-      for (const mesh of (entry.meshes || [])) scene.remove(mesh);
+      if (entry.mesh) { scene.remove(entry.mesh); entry.mesh.geometry.dispose(); }
       if (entry.material) entry.material.dispose();
     }
     moleculeSkins.clear();
@@ -1915,6 +1994,39 @@ function buildPalette() {
   sliderGroup.append(sliderLabel, slider);
   pal.appendChild(sliderGroup);
 
+  // --- Default Skin dropdown ---
+  const skinDropGroup = document.createElement('div');
+  skinDropGroup.className = 'toolbar-dropdown';
+
+  const skinDropLabel = document.createElement('div');
+  skinDropLabel.className = 'dropdown-label';
+  skinDropLabel.textContent = 'Default Skin';
+
+  const skinDropSelect = document.createElement('select');
+  skinDropSelect.id = 'default-skin-select';
+  for (const name of AVAILABLE_SKINS) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name === 'none' ? 'None (flat color)' : name;
+    if (name === defaultSkinType) opt.selected = true;
+    skinDropSelect.appendChild(opt);
+  }
+  skinDropSelect.addEventListener('change', async () => {
+    const newType = skinDropSelect.value;
+    // Pre-load textures so new molecules get instant materials
+    const regEntry = SKIN_REGISTRY.find(s => s.name === newType);
+    if (regEntry && regEntry.type === 'json') {
+      await loadSkinFromJSON(regEntry.name, regEntry.path);
+    } else if (newType !== 'none') {
+      await loadSkinTextureSet(newType);
+    }
+    await ensureDisplacementPixels(newType);
+    defaultSkinType = newType;
+  });
+
+  skinDropGroup.append(skinDropLabel, skinDropSelect);
+  pal.appendChild(skinDropGroup);
+
   // --- Brightness slider (tone mapping exposure) ---
   const brightGroup = document.createElement('div');
   brightGroup.className = 'slider-group';
@@ -1923,11 +2035,11 @@ function buildPalette() {
   brightLabel.className = 'slider-label';
   brightLabel.innerHTML = '<span>Bright</span><span class="slider-value" id="bright-value">50%</span>';
 
-  const BRIGHT_MIN = 0.4;
-  const BRIGHT_MAX = 3.6;
-  // Slider 0–100, midpoint (50) = TONE_MAP_EXPOSURE
+  const BRIGHT_MIN = 0.0;
+  const BRIGHT_MAX = 0.8;
+  // Slider 0–100, midpoint (50) = TONE_MAP_EXPOSURE (0.4)
   function brightSliderToExposure(v) {
-    const t = v / 100; // 0–1, 0.5 = midpoint
+    const t = v / 100;
     return BRIGHT_MIN + t * (BRIGHT_MAX - BRIGHT_MIN);
   }
   const brightSlider = document.createElement('input');
@@ -1941,6 +2053,50 @@ function buildPalette() {
 
   brightGroup.append(brightLabel, brightSlider);
   pal.appendChild(brightGroup);
+
+  // --- Displacement slider ---
+  const dispGroup = document.createElement('div');
+  dispGroup.className = 'slider-group';
+
+  const dispLabel = document.createElement('div');
+  dispLabel.className = 'slider-label';
+  dispLabel.innerHTML = '<span>Displace</span><span class="slider-value" id="disp-value">50%</span>';
+
+  const DISP_MIN = 0;
+  const DISP_MAX = DISPLACEMENT_SCALE_MULTIPLIER * 2; // midpoint = current value
+  const dispSlider = document.createElement('input');
+  dispSlider.type = 'range'; dispSlider.min = '0'; dispSlider.max = '100'; dispSlider.value = '50';
+  dispSlider.id = 'disp-slider';
+  dispSlider.addEventListener('input', (e) => {
+    const v = parseInt(e.target.value);
+    document.getElementById('disp-value').textContent = v + '%';
+    const newMultiplier = DISP_MIN + (v / 100) * (DISP_MAX - DISP_MIN);
+    applyDisplacementMultiplier(newMultiplier);
+  });
+
+  dispGroup.append(dispLabel, dispSlider);
+  pal.appendChild(dispGroup);
+
+  // --- Show Atoms toggle ---
+  const atomToggle = document.createElement('div');
+  atomToggle.className = 'tool-btn active';
+  atomToggle.id = 'show-atoms-btn';
+  atomToggle.innerHTML = '<span class="icon">&#9679;</span><span>Atoms</span>';
+  atomToggle.addEventListener('click', () => {
+    showAtoms = !showAtoms;
+    atomToggle.classList.toggle('active', showAtoms);
+    for (const a of atoms) {
+      a.group.visible = showAtoms;
+    }
+    // Also hide/show connection bridges and tendrils
+    for (const c of connections) {
+      if (c.bridgeMesh) c.bridgeMesh.visible = showAtoms;
+    }
+    for (const l of tendrilLines) {
+      l.visible = showAtoms;
+    }
+  });
+  pal.appendChild(atomToggle);
 }
 
 // ===========================================================================
@@ -2141,6 +2297,62 @@ function setupEvents() {
   renderer.domElement.addEventListener('dblclick', onDoubleClick);
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('resize', onResize);
+
+  // Mobile touch → mouse event adapter
+  function touchToMouse(type, touch) {
+    return new MouseEvent(type, {
+      clientX: touch.clientX, clientY: touch.clientY,
+      button: 0, buttons: 1, bubbles: true,
+    });
+  }
+  renderer.domElement.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    const t = e.touches[0];
+    renderer.domElement.dispatchEvent(touchToMouse('mousemove', t));
+    renderer.domElement.dispatchEvent(touchToMouse('mousedown', t));
+  }, { passive: false });
+  renderer.domElement.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    renderer.domElement.dispatchEvent(touchToMouse('mousemove', e.touches[0]));
+  }, { passive: false });
+  renderer.domElement.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    const t = e.changedTouches[0];
+    renderer.domElement.dispatchEvent(touchToMouse('mouseup', t));
+  }, { passive: false });
+
+  // Touch support for palette atom buttons
+  document.querySelectorAll('.atom-btn').forEach(btn => {
+    btn.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      const t = e.touches[0];
+      btn.dispatchEvent(new MouseEvent('mousedown', { clientX: t.clientX, clientY: t.clientY, button: 0, bubbles: true }));
+    }, { passive: false });
+  });
+
+  // Touch support for machine cards
+  document.querySelectorAll('.machine-card').forEach(card => {
+    card.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      const t = e.touches[0];
+      card.dispatchEvent(new MouseEvent('mousedown', { clientX: t.clientX, clientY: t.clientY, button: 0, bubbles: true }));
+    }, { passive: false });
+  });
+
+  // Global touch move/end for drags in progress
+  document.addEventListener('touchmove', (e) => {
+    if (isDraggingFromPalette || isDraggingMachine) {
+      e.preventDefault();
+      document.dispatchEvent(new MouseEvent('mousemove', { clientX: e.touches[0].clientX, clientY: e.touches[0].clientY, bubbles: true }));
+    }
+  }, { passive: false });
+  document.addEventListener('touchend', (e) => {
+    if (isDraggingFromPalette || isDraggingMachine) {
+      e.preventDefault();
+      const t = e.changedTouches[0];
+      document.dispatchEvent(new MouseEvent('mouseup', { clientX: t.clientX, clientY: t.clientY, bubbles: true }));
+    }
+  }, { passive: false });
 }
 
 function onMouseMove(e) {
@@ -2278,8 +2490,7 @@ function undo() {
 
 let lastTime = performance.now();
 
-async function animate() {
-  requestAnimationFrame(animate);
+function animate() {
   const now = performance.now();
   const dt = Math.min((now - lastTime) / 1000, 0.05);
   lastTime = now;
@@ -2298,14 +2509,13 @@ async function animate() {
   else if (selectedAtomType) renderer.domElement.style.cursor = 'copy';
   else renderer.domElement.style.cursor = 'default';
 
-  // Update skin sphere positions (real geometry in main scene)
-  if (skinOpacity > 0) {
-    updateMoleculeSkins();
-  }
+  // Update skin sphere positions to follow atoms
+  if (skinOpacity > 0) updateMoleculeSkins();
 
-  // Single render pass — skin spheres are in the scene, lit by scene lights + IBL
+  // Synchronous render — queues GPU commands without blocking.
+  // setAnimationLoop handles frame pacing; renderAsync is NOT needed here.
   renderer.setRenderTarget(null);
-  await renderer.renderAsync(scene, camera);
+  renderer.render(scene, camera);
 }
 
 // ===========================================================================
@@ -2318,8 +2528,17 @@ window.__test = {
   get moleculeSkins() { return moleculeSkins; },
   get skinTextureCache() { return skinTextureCache; },
   loadSkinFromJSON, createSkinMaterial, getSkinColor, findSkinForAtom,
-  ensureDisplacementData, getSkinGeometry,
+  addAtom, removeAtom, updateMoleculeSkins, THREE,
+  get mcGPU() { return mcGPU; },
   SKIN_REGISTRY, AVAILABLE_SKINS,
+  get defaultSkinType() { return defaultSkinType; },
+  set defaultSkinType(v) { defaultSkinType = v; },
+  ensureDisplacementPixels, applyDisplacementMultiplier,
+  get currentDisplacementMultiplier() { return currentDisplacementMultiplier; },
+  spawnMachine, PREBUILT_MACHINES,
+  get connections() { return connections; },
+  get isFrozen() { return isFrozen; },
+  set isFrozen(v) { isFrozen = v; },
 };
 
 init().catch(err => {
