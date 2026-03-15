@@ -1,16 +1,26 @@
-import { useState, type FormEvent } from 'react';
-import type { HistoryEntry, MapKey } from '../lib/types';
+import { useState, useRef, type FormEvent, type ChangeEvent } from 'react';
+import type { HistoryEntry, MaterialScalars, MapKey } from '../lib/types';
+import { DEFAULT_SCALARS } from '../lib/types';
 
 // Re-export HistoryEntry so existing imports from '../App' keep working
 export type { HistoryEntry };
+
+/** Shape of the bundled JSON file we save / load */
+interface ShaderBundle {
+  prompt: string;
+  scalars: MaterialScalars;
+  maps: Partial<Record<MapKey, string>>;
+}
 
 interface HistoryPanelProps {
   history: HistoryEntry[];
   activeMapId: string | null;
   loading: boolean;
   loadingStatus: string;
+  scalarOverrides: Record<string, MaterialScalars>;
   onGenerate: (prompt: string) => void;
   onSelect: (id: string) => void;
+  onLoad: (entry: HistoryEntry, scalars: MaterialScalars) => void;
 }
 
 /** Human-readable labels for map thumbnails */
@@ -49,19 +59,18 @@ function slugify(text: string, maxLen = 30): string {
     .replace(/^-|-$/g, '');
 }
 
-function downloadSingleMap(entry: HistoryEntry, key: MapKey) {
-  const dataUrl = entry.maps[key];
-  if (!dataUrl) return;
+function saveShader(entry: HistoryEntry, overrides?: MaterialScalars) {
+  const bundle: ShaderBundle = {
+    prompt: entry.prompt,
+    scalars: overrides ?? entry.recipe.scalars,
+    maps: entry.maps,
+  };
+  const blob = new Blob([JSON.stringify(bundle)], { type: 'application/json' });
   const a = document.createElement('a');
-  a.href = dataUrl;
-  a.download = `${key}-${slugify(entry.prompt)}.png`;
+  a.href = URL.createObjectURL(blob);
+  a.download = `${slugify(entry.prompt)}.shader.json`;
   a.click();
-}
-
-function downloadAllMaps(entry: HistoryEntry) {
-  for (const key of MAP_DISPLAY_ORDER) {
-    if (entry.maps[key]) downloadSingleMap(entry, key);
-  }
+  URL.revokeObjectURL(a.href);
 }
 
 /** Pick the best thumbnail: prefer albedo, fall back to displacement, then first available */
@@ -79,10 +88,13 @@ export function HistoryPanel({
   activeMapId,
   loading,
   loadingStatus,
+  scalarOverrides,
   onGenerate,
   onSelect,
+  onLoad,
 }: HistoryPanelProps) {
   const [prompt, setPrompt] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -92,9 +104,39 @@ export function HistoryPanel({
     setPrompt('');
   };
 
+  const handleFileOpen = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Reset so the same file can be reopened
+    e.target.value = '';
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const bundle = JSON.parse(reader.result as string) as ShaderBundle;
+        const entry: HistoryEntry = {
+          id: crypto.randomUUID(),
+          prompt: bundle.prompt ?? 'Loaded shader',
+          recipe: {
+            mapsToGenerate: [],
+            mapDescriptions: {},
+            scalars: { ...DEFAULT_SCALARS, ...bundle.scalars },
+          },
+          maps: bundle.maps ?? {},
+          timestamp: Date.now(),
+        };
+        onLoad(entry, entry.recipe.scalars);
+      } catch (err) {
+        console.error('Failed to load shader file:', err);
+        alert('Invalid shader file');
+      }
+    };
+    reader.readAsText(file);
+  };
+
   return (
     <div className="history-panel">
-      <div className="panel-header">PBR Materials</div>
+      <div className="panel-header">Physically Based Materials</div>
 
       <div className="history-list">
         {history.length === 0 && !loading ? (
@@ -136,9 +178,9 @@ export function HistoryPanel({
                     className="history-download"
                     onClick={(e) => {
                       e.stopPropagation();
-                      downloadAllMaps(entry);
+                      saveShader(entry, scalarOverrides[entry.id]);
                     }}
-                    title="Download all maps"
+                    title="Save shader bundle"
                   >
                     Save
                   </button>
@@ -148,22 +190,14 @@ export function HistoryPanel({
                 {isActive && availableMaps.length > 0 && (
                   <div className="map-thumbs">
                     {availableMaps.map((key) => (
-                      <button
-                        key={key}
-                        className="map-thumb-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          downloadSingleMap(entry, key);
-                        }}
-                        title={`Download ${key} map`}
-                      >
+                      <div key={key} className="map-thumb-preview">
                         <img
                           className="map-thumb-img"
                           src={entry.maps[key]!}
                           alt={key}
                         />
                         <span className="map-thumb-label">{MAP_LABELS[key]}</span>
-                      </button>
+                      </div>
                     ))}
                   </div>
                 )}
@@ -190,13 +224,29 @@ export function HistoryPanel({
             }
           }}
         />
-        <button
-          className="generate-btn"
-          type="submit"
-          disabled={!prompt.trim() || loading}
-        >
-          {loading ? 'Generating...' : 'Create'}
-        </button>
+        <div className="prompt-actions">
+          <button
+            className="generate-btn"
+            type="submit"
+            disabled={!prompt.trim() || loading}
+          >
+            {loading ? 'Generating...' : 'Create'}
+          </button>
+          <button
+            className="open-btn"
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            Open shader&hellip;
+          </button>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".json,.shader.json"
+          style={{ display: 'none' }}
+          onChange={handleFileOpen}
+        />
       </form>
     </div>
   );

@@ -1,0 +1,366 @@
+/* ---------------------------------------------------------------------------
+   Root & Reset
+   --------------------------------------------------------------------------- */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg-dark: #0a0a1a;
+  --bg-panel: #12121e;
+  --bg-hover: #1a1a2e;
+  --text-primary: #e0e0f0;
+  --text-secondary: #8888aa;
+  --text-dim: #555566;
+  --border: #222244;
+  --accent: #6699cc;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-dark);
+  color: var(--text-primary);
+  font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 13px;
+}
+
+/* ---------------------------------------------------------------------------
+   App layout: toolbar | viewport | panel
+   --------------------------------------------------------------------------- */
+
+.app {
+  display: grid;
+  grid-template-columns: 72px 1fr 220px;
+  height: 100vh;
+}
+
+/* ---------------------------------------------------------------------------
+   Atom Toolbar (left)
+   --------------------------------------------------------------------------- */
+
+.atom-toolbar {
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 0;
+  gap: 4px;
+}
+
+.toolbar-title {
+  font-size: 9px;
+  letter-spacing: 2px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.atom-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  background: var(--bg-dark);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  gap: 2px;
+}
+
+.atom-button:hover {
+  background: var(--bg-hover);
+  border-color: var(--atom-color, var(--border));
+}
+
+.atom-button.active {
+  background: var(--bg-hover);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--atom-color) 40%, transparent);
+}
+
+.atom-icon {
+  font-size: 22px;
+  color: var(--atom-color, var(--text-primary));
+  line-height: 1;
+}
+
+.atom-name {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-secondary);
+}
+
+.toolbar-divider {
+  width: 36px;
+  height: 1px;
+  background: var(--border);
+  margin: 8px 0;
+}
+
+.reset-button {
+  --atom-color: #ff4444;
+}
+
+/* ---------------------------------------------------------------------------
+   Viewport (center)
+   --------------------------------------------------------------------------- */
+
+.viewport {
+  position: relative;
+  overflow: hidden;
+}
+
+.viewport canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
+.viewport-hint {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(10, 10, 26, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+
+.viewport-hint strong {
+  color: var(--text-primary);
+  text-transform: uppercase;
+}
+
+/* ---------------------------------------------------------------------------
+   Param Panel (right)
+   --------------------------------------------------------------------------- */
+
+.param-panel {
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  padding: 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+.panel-title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.panel-empty p {
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+.panel-description {
+  color: var(--text-secondary);
+  line-height: 1.5;
+  font-size: 12px;
+}
+
+.panel-section {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.section-title {
+  font-size: 9px;
+  letter-spacing: 2px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.param-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.param-item {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 4px 8px;
+  background: var(--bg-dark);
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+.atom-count {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.panel-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+/* ---------------------------------------------------------------------------
+   Param sliders & options
+   --------------------------------------------------------------------------- */
+
+.param-slider {
+  margin-bottom: 10px;
+}
+
+.param-slider-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.param-slider-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.param-slider-value {
+  font-size: 11px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.param-slider input[type="range"] {
+  width: 100%;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--border);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.param-slider input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg-panel);
+  cursor: pointer;
+}
+
+.param-option {
+  margin-bottom: 10px;
+}
+
+.option-buttons {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.option-btn {
+  font-size: 10px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-dark);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.1s ease;
+  font-family: inherit;
+}
+
+.option-btn:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.option-btn.active {
+  background: var(--accent);
+  color: var(--bg-dark);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------------------
+   Connection list
+   --------------------------------------------------------------------------- */
+
+.connection-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.connection-item {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 3px 8px;
+  background: var(--bg-dark);
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+.param-state {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------------------
+   Mode buttons
+   --------------------------------------------------------------------------- */
+
+.mode-button {
+  height: 44px;
+}
+
+/* ---------------------------------------------------------------------------
+   Energy bar
+   --------------------------------------------------------------------------- */
+
+.energy-bar-container {
+  margin-top: 4px;
+}
+
+.energy-bar-track {
+  width: 100%;
+  height: 6px;
+  background: var(--bg-dark);
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.energy-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.2s ease, background-color 0.2s ease;
+}
+
+.panel-cost {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}

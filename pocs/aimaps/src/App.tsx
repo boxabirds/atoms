@@ -157,6 +157,15 @@ export function App() {
     [activeMapId],
   );
 
+  const handleLoad = useCallback(
+    (entry: HistoryEntry, scalars: MaterialScalars) => {
+      setHistory((prev) => [entry, ...prev]);
+      setActiveMapId(entry.id);
+      setScalarOverrides((prev) => ({ ...prev, [entry.id]: scalars }));
+    },
+    [],
+  );
+
   const handleGenerate = useCallback(async (prompt: string) => {
     setLoading(true);
     setLoadingStatus('Analyzing prompt...');
@@ -236,15 +245,17 @@ export function App() {
         <MaterialTuner
           scalars={activeScalars}
           onChange={handleScalarChange}
-          disabled={!activeBase || loading}
+          disabled={!activeBase}
         />
         <HistoryPanel
           history={history}
           activeMapId={activeMapId}
           loading={loading}
           loadingStatus={loadingStatus}
+          scalarOverrides={scalarOverrides}
           onGenerate={handleGenerate}
           onSelect={setActiveMapId}
+          onLoad={handleLoad}
         />
       </div>
     </div>

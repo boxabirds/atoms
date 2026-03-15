@@ -312,22 +312,14 @@ body,
   flex-wrap: wrap;
 }
 
-.map-thumb-btn {
+.map-thumb-preview {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 3px;
-  background: none;
   border: 1px solid #333;
   border-radius: 6px;
   padding: 4px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.map-thumb-btn:hover {
-  border-color: #6666cc;
-  background: rgba(102, 102, 204, 0.1);
 }
 
 .map-thumb-img {
@@ -408,7 +400,13 @@ body,
   color: #555;
 }
 
+.prompt-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .generate-btn {
+  flex: 1;
   padding: 10px;
   background: #5555bb;
   border: none;
@@ -427,6 +425,23 @@ body,
 .generate-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.open-btn {
+  padding: 10px 14px;
+  background: none;
+  border: 1px solid #444;
+  border-radius: 8px;
+  color: #aaa;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.open-btn:hover {
+  border-color: #6666cc;
+  color: #fff;
 }
 
 /* ── Scrollbar ── */
