@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Skin Cycle Test</title>
+<style>
+  body { margin: 0; background: #0a0a14; color: #eee; font-family: 'Segoe UI', system-ui, sans-serif; }
+  canvas { display: block; }
+  #hud {
+    position: absolute; top: 0; left: 0; right: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: center;
+    gap: 16px; padding: 12px 20px;
+    background: rgba(0,0,0,0.7); backdrop-filter: blur(8px);
+  }
+  #skin-name { font-size: 18px; font-weight: 600; min-width: 260px; text-align: center; }
+  #skin-info { font-size: 12px; color: #888; min-width: 300px; font-family: monospace; }
+  button {
+    padding: 8px 20px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.05);
+    color: #eee; border-radius: 6px; cursor: pointer; font-size: 14px;
+  }
+  button:hover { background: rgba(255,255,255,0.15); }
+  #status { font-size: 11px; color: #666; position: absolute; bottom: 10px; left: 10px; z-index: 10; font-family: monospace; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.173.0/build/three.webgpu.min.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.173.0/build/three.webgpu.min.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.173.0/build/three.tsl.min.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.173.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+  <div id="hud">
+    <button id="prev-btn">◀ Prev</button>
+    <div id="skin-name">loading...</div>
+    <button id="next-btn">Next ▶</button>
+    <button id="auto-btn">Auto cycle (3s)</button>
+  </div>
+  <div id="skin-info"></div>
+  <div id="status"></div>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+    import { MarchingCubesGPU, generateSphericalUVs } from './marching-cubes-gpu.mjs';
+
+    // ── Skin registry (copied from index.html) ──────────────────────────────
+    const SKIN_REGISTRY = [
+      { name: 'none', index: 0 },
+      { name: 'rusty-and-warped', index: 1, type: 'png', path: './skins/rusty-and-warped/' },
+      { name: 'lumpy-translucent-gold', index: 2, type: 'json', path: './skins-json/lumpy-translucent-gold.shader.json' },
+      { name: 'aquamarine-glass', index: 3, type: 'json', path: './skins-json/aquamarine-glass.json' },
+      { name: 'flickering-flame', index: 4, type: 'json', path: './skins-json/flickering-flame.shader.json' },
+      { name: 'rainbow-marshmallow', index: 5, type: 'json', path: './skins-json/rainbow-marshmallow.shader.json' },
+      { name: 'william-slime', index: 6, type: 'json', path: './skins-json/william slime.json' },
+      { name: 'xmas-decorations', index: 7, type: 'json', path: './skins-json/xmas decorations.json' },
+    ];
+
+    const SKIN_DEFAULT_OPACITY = 0.85;
+    const ENV_INTENSITY = 3.0;
+    const TONE_MAP_EXPOSURE = 1.8;
+
+    const skinTextureCache = new Map();
+    const skinNameEl = document.getElementById('skin-name');
+    const skinInfoEl = document.getElementById('skin-info');
+    const statusEl = document.getElementById('status');
+
+    let currentSkinIdx = 0;
+    let mesh = null;
+    let autoInterval = null;
+
+    // ── Texture loading (from index.html) ───────────────────────────────────
+
+    const MAP_TYPES = ['albedo', 'normal', 'roughness', 'metalness'];
+    const textureLoader = new THREE.TextureLoader();
+
+    async function loadSkinTextureSet(name) {
+      if (name === 'none' || skinTextureCache.has(name)) return;
+      const basePath = `./skins/${name}/`;
+      const textures = {};
+      const promises = MAP_TYPES.map(type => {
+        const url = `${basePath}${type}-${name}.png`;
+        return new Promise(resolve => {
+          textureLoader.load(url, tex => {
+            tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+            tex.colorSpace = type === 'albedo' ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
+            textures[type] = tex;
+            resolve();
+          }, undefined, () => resolve());
+        });
+      });
+      await Promise.all(promises);
+      if (!textures.scalars) textures.scalars = {};
+      skinTextureCache.set(name, textures);
+    }
+
+    async function loadSkinFromJSON(name, url) {
+      if (skinTextureCache.has(name)) return;
+      const resp = await fetch(url);
+      const json = await resp.json();
+      const textures = { scalars: json.scalars || {} };
+
+      // Decode base64 data URI maps → THREE.Texture
+      const mapEntries = Object.entries(json.maps || {});
+      const promises = mapEntries.map(([mapType, dataUri]) => {
+        return new Promise(resolve => {
+          const img = new Image();
+          img.onload = () => {
+            const tex = new THREE.Texture(img);
+            tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+            const isSRGB = mapType === 'albedo' || mapType === 'emissive';
+            tex.colorSpace = isSRGB ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
+            tex.needsUpdate = true;
+            textures[mapType] = tex;
+            resolve();
+          };
+          img.onerror = () => resolve();
+          img.src = dataUri;
+        });
+      });
+      await Promise.all(promises);
+      skinTextureCache.set(name, textures);
+    }
+
+    // ── Material creation (copied from index.html) ───────────────────────────
+
+    function createSkinMaterial(skinType, moleculeColor) {
+      const mat = new THREE.MeshPhysicalMaterial({
+        color: moleculeColor,
+        roughness: 0.5,
+        metalness: 0.0,
+        side: THREE.FrontSide,
+        transparent: true,
+        opacity: SKIN_DEFAULT_OPACITY,
+      });
+
+      if (skinType === 'none') return mat;
+
+      const textures = skinTextureCache.get(skinType);
+      if (!textures) return mat;
+
+      if (textures.scalars) {
+        const s = textures.scalars;
+        mat.roughness = s.roughness ?? 0.5;
+        mat.metalness = s.metalness ?? 0.0;
+        if (s.transmission > 0) {
+          mat.transmission = s.transmission;
+          mat.side = THREE.DoubleSide;
+        }
+        if (s.thickness > 0) mat.thickness = s.thickness;
+        if (s.ior) mat.ior = s.ior;
+        if (s.emissiveIntensity > 0) {
+          mat.emissiveIntensity = s.emissiveIntensity;
+          mat.emissive.set(s.emissiveColor || moleculeColor);
+        }
+        if (s.baseColor) mat.color.setStyle(s.baseColor);
+        if (s.clearcoat > 0) mat.clearcoat = s.clearcoat;
+        if (s.clearcoatRoughness > 0) mat.clearcoatRoughness = s.clearcoatRoughness;
+        if (s.sheen > 0) {
+          mat.sheen = s.sheen;
+          if (s.sheenColor) mat.sheenColor.setStyle(s.sheenColor);
+        }
+      }
+
+      const mapSlots = [
+        ['albedo', 'map', THREE.SRGBColorSpace],
+        ['normal', 'normalMap', THREE.LinearSRGBColorSpace],
+        ['roughness', 'roughnessMap', THREE.LinearSRGBColorSpace],
+        ['metalness', 'metalnessMap', THREE.LinearSRGBColorSpace],
+        ['emissive', 'emissiveMap', THREE.SRGBColorSpace],
+      ];
+      for (const [texKey, matSlot, colorSpace] of mapSlots) {
+        if (textures[texKey]) {
+          const tex = textures[texKey].clone();
+          tex.colorSpace = colorSpace;
+          tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+          tex.needsUpdate = true;
+          mat[matSlot] = tex;
+        }
+      }
+      if (textures.albedo && !(textures.scalars?.baseColor)) {
+        mat.color.setHex(0xffffff);
+      }
+
+      return mat;
+    }
+
+    // ── Scene ────────────────────────────────────────────────────────────────
+
+    const renderer = new THREE.WebGPURenderer({ antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+    await renderer.init();
+    renderer.toneMapping = THREE.NeutralToneMapping;
+    renderer.toneMappingExposure = TONE_MAP_EXPOSURE;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a0a1a);
+
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment()).texture;
+    scene.environmentIntensity = ENV_INTENSITY;
+    pmrem.dispose();
+
+    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 100);
+    camera.position.set(0, 0.3, 2);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+    const keyLight = new THREE.DirectionalLight(0xfff4e0, 3);
+    keyLight.position.set(4, 4, 5);
+    scene.add(keyLight);
+    const fillLight = new THREE.DirectionalLight(0xc0d0ff, 1.5);
+    fillLight.position.set(-4, 2, 3);
+    scene.add(fillLight);
+
+    // ── Generate MC blob ─────────────────────────────────────────────────────
+
+    const device = renderer.backend.device;
+    const mcGPU = new MarchingCubesGPU(device);
+    await mcGPU.init();
+
+    // 5-atom cluster for a nice organic shape
+    const ATOM_RADIUS = 0.25;
+    const atomData = new Float32Array([
+      0, 0, 0, ATOM_RADIUS,
+      0.2, 0.15, 0, ATOM_RADIUS,
+      -0.1, 0.2, 0.1, ATOM_RADIUS,
+      0.05, -0.1, 0.15, ATOM_RADIUS,
+      -0.12, 0.05, -0.08, ATOM_RADIUS,
+    ]);
+
+    statusEl.textContent = 'Computing MC mesh...';
+    const result = await mcGPU.computeMolecule(atomData);
+    mcGPU.dispose();
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(result.positions, 3));
+    geom.setAttribute('normal', new THREE.BufferAttribute(result.normals, 3));
+    const uvs = generateSphericalUVs(result.positions, result.vertexCount);
+    geom.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geom.computeBoundingSphere();
+
+    statusEl.textContent = `MC mesh: ${result.vertexCount} verts`;
+
+    // ── Skin cycling ─────────────────────────────────────────────────────────
+
+    async function applySkin(idx) {
+      const reg = SKIN_REGISTRY[idx];
+      skinNameEl.textContent = `${reg.name} (${idx + 1}/${SKIN_REGISTRY.length})`;
+      skinInfoEl.textContent = 'loading...';
+
+      try {
+        if (reg.type === 'json') {
+          await loadSkinFromJSON(reg.name, reg.path);
+        } else if (reg.type === 'png') {
+          await loadSkinTextureSet(reg.name);
+        }
+      } catch (e) {
+        skinInfoEl.textContent = `LOAD ERROR: ${e.message}`;
+        console.error(`Failed to load skin ${reg.name}:`, e);
+        return;
+      }
+
+      const moleculeColor = 0xdd7744;
+      const mat = createSkinMaterial(reg.name, moleculeColor);
+
+      if (mesh) {
+        mesh.material.dispose();
+        mesh.material = mat;
+      } else {
+        mesh = new THREE.Mesh(geom, mat);
+        scene.add(mesh);
+      }
+
+      // Build info string
+      const textures = skinTextureCache.get(reg.name);
+      const info = [];
+      info.push(`color: #${mat.color.getHexString()}`);
+      info.push(`rough: ${mat.roughness.toFixed(2)}`);
+      info.push(`metal: ${mat.metalness.toFixed(2)}`);
+      if (mat.transmission > 0) info.push(`trans: ${mat.transmission.toFixed(2)}`);
+      if (mat.thickness > 0) info.push(`thick: ${mat.thickness.toFixed(1)}`);
+      if (mat.ior !== 1.5) info.push(`ior: ${mat.ior}`);
+      if (mat.emissiveIntensity > 0) info.push(`emissive: ${mat.emissiveIntensity.toFixed(1)}`);
+      if (mat.clearcoat > 0) info.push(`clearcoat: ${mat.clearcoat.toFixed(2)}`);
+      if (mat.sheen > 0) info.push(`sheen: ${mat.sheen.toFixed(2)}`);
+      if (mat.map) info.push('MAP:albedo');
+      if (mat.normalMap) info.push('MAP:normal');
+      if (mat.roughnessMap) info.push('MAP:roughness');
+      if (mat.metalnessMap) info.push('MAP:metalness');
+      if (mat.emissiveMap) info.push('MAP:emissive');
+      info.push(`opacity: ${mat.opacity.toFixed(2)}`);
+      info.push(`side: ${mat.side === THREE.DoubleSide ? 'double' : 'front'}`);
+      info.push(`transparent: ${mat.transparent}`);
+
+      skinInfoEl.textContent = info.join(' · ');
+    }
+
+    function nextSkin() {
+      currentSkinIdx = (currentSkinIdx + 1) % SKIN_REGISTRY.length;
+      applySkin(currentSkinIdx);
+    }
+
+    function prevSkin() {
+      currentSkinIdx = (currentSkinIdx - 1 + SKIN_REGISTRY.length) % SKIN_REGISTRY.length;
+      applySkin(currentSkinIdx);
+    }
+
+    document.getElementById('next-btn').onclick = nextSkin;
+    document.getElementById('prev-btn').onclick = prevSkin;
+    document.getElementById('auto-btn').onclick = () => {
+      if (autoInterval) {
+        clearInterval(autoInterval);
+        autoInterval = null;
+        document.getElementById('auto-btn').textContent = 'Auto cycle (3s)';
+      } else {
+        const AUTO_CYCLE_MS = 3000;
+        autoInterval = setInterval(nextSkin, AUTO_CYCLE_MS);
+        document.getElementById('auto-btn').textContent = 'Stop auto';
+        nextSkin();
+      }
+    };
+
+    // Keyboard: left/right arrows
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight') nextSkin();
+      if (e.key === 'ArrowLeft') prevSkin();
+    });
+
+    // Start with first skin
+    await applySkin(0);
+
+    // Expose for Playwright
+    window.__skinTest = {
+      applySkin,
+      get currentSkinIdx() { return currentSkinIdx; },
+      get mesh() { return mesh; },
+      skinTextureCache,
+      SKIN_REGISTRY,
+    };
+
+    // Render loop
+    renderer.setAnimationLoop(() => {
+      controls.update();
+      renderer.render(scene, camera);
+    });
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>

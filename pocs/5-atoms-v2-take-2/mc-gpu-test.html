@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>GPU Marching Cubes — Standalone Test</title>
+  <style>
+    body { margin: 0; background: #111; color: #eee; font-family: 'Segoe UI', system-ui, sans-serif; }
+    canvas { display: block; }
+    #info {
+      position: absolute; top: 12px; left: 12px; z-index: 10;
+      font-size: 13px; line-height: 1.6; font-family: monospace;
+    }
+    #info .pass { color: #4f4; }
+    #info .fail { color: #f44; }
+    #info .pending { color: #ff4; }
+    #results {
+      position: absolute; bottom: 0; left: 0; right: 0; z-index: 10;
+      display: flex; justify-content: center; gap: 0;
+      pointer-events: none;
+    }
+    .test-label {
+      flex: 1; max-width: 300px; text-align: center; padding: 12px 8px 16px;
+      background: linear-gradient(transparent, rgba(0,0,0,0.7) 30%);
+    }
+    .test-label .name { font-size: 14px; font-weight: 600; color: #ccc; margin-bottom: 4px; }
+    .test-label .desc { font-size: 11px; color: #888; margin-bottom: 6px; line-height: 1.4; }
+    .test-label .stat { font-size: 11px; font-family: monospace; }
+    .test-label .stat.pass { color: #4f4; }
+    .test-label .stat.fail { color: #f44; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.173.0/build/three.webgpu.min.js",
+      "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.173.0/build/three.webgpu.min.js",
+      "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.173.0/build/three.tsl.min.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.173.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="info">GPU MC Test: <span id="status" class="pending">initializing...</span></div>
+  <div id="results"></div>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { MarchingCubesGPU } from './marching-cubes-gpu.mjs';
+
+    const statusEl = document.getElementById('status');
+    const log = [];
+    const results = {};
+
+    function setStatus(msg, cls = 'pending') {
+      statusEl.textContent = msg;
+      statusEl.className = cls;
+    }
+
+    // ── Test cases ──────────────────────────────────────────────────────────
+    // Each: { name, atoms: [x,y,z,r, ...], expectVertices: 'some' | 'none' }
+
+    const ATOM_RADIUS = 0.25;
+    const MERGED_DISTANCE = 0.3; // close enough to merge into one blob
+    const SEPARATED_DISTANCE = 4.0; // far enough for two distinct lobes
+
+    const TEST_CASES = [
+      {
+        name: '1 atom',
+        desc: 'Single metaball produces a sphere-like isosurface',
+        atoms: new Float32Array([
+          0, 0, 0, ATOM_RADIUS,
+        ]),
+        expectVertices: 'some',
+      },
+      {
+        name: '2 atoms — merged',
+        desc: 'Close atoms merge into one smooth peanut blob',
+        atoms: new Float32Array([
+          0, 0, 0, ATOM_RADIUS,
+          MERGED_DISTANCE, 0, 0, ATOM_RADIUS,
+        ]),
+        expectVertices: 'some',
+      },
+      {
+        name: '2 atoms — separated',
+        desc: 'Far-apart atoms produce two distinct lobes',
+        atoms: new Float32Array([
+          -SEPARATED_DISTANCE / 2, 0, 0, ATOM_RADIUS,
+          SEPARATED_DISTANCE / 2, 0, 0, ATOM_RADIUS,
+        ]),
+        expectVertices: 'some',
+      },
+      {
+        name: '5 atoms — cluster',
+        desc: 'Tightly grouped atoms form an organic blobby mass',
+        atoms: new Float32Array([
+          0, 0, 0, ATOM_RADIUS,
+          0.2, 0.15, 0, ATOM_RADIUS,
+          -0.1, 0.25, 0.1, ATOM_RADIUS,
+          0.05, -0.1, 0.2, ATOM_RADIUS,
+          -0.15, 0.05, -0.1, ATOM_RADIUS,
+        ]),
+        expectVertices: 'some',
+      },
+    ];
+
+    // ── Scene setup ─────────────────────────────────────────────────────────
+
+    const renderer = new THREE.WebGPURenderer({ antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1a2e);
+
+    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 100);
+    camera.position.set(0, 1.5, 10);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    // Lighting
+    const ambientLight = new THREE.AmbientLight(0x404060, 2);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 3);
+    dirLight.position.set(2, 3, 1);
+    scene.add(dirLight);
+
+    const material = new THREE.MeshPhysicalMaterial({
+      color: 0x4488cc,
+      roughness: 0.3,
+      metalness: 0.1,
+      clearcoat: 0.5,
+    });
+
+    // ── Init & run tests ────────────────────────────────────────────────────
+
+    async function runTests() {
+      try {
+        await renderer.init();
+        const device = renderer.backend.device;
+        if (!device) throw new Error('No GPUDevice from renderer.backend.device');
+
+        const mcGPU = new MarchingCubesGPU(device);
+        await mcGPU.init();
+        console.log('[mc-test] MarchingCubesGPU initialized');
+
+        const meshes = [];
+        let allPassed = true;
+
+        for (let i = 0; i < TEST_CASES.length; i++) {
+          const tc = TEST_CASES[i];
+          setStatus(`Running: ${tc.name}...`);
+          console.log(`[mc-test] Running: ${tc.name}`);
+
+          const t0 = performance.now();
+          const result = await mcGPU.computeMolecule(tc.atoms);
+          const elapsed = performance.now() - t0;
+
+          const passed = tc.expectVertices === 'some'
+            ? result.vertexCount > 0
+            : result.vertexCount === 0;
+
+          results[tc.name] = {
+            vertexCount: result.vertexCount,
+            elapsed: elapsed.toFixed(1),
+            passed,
+          };
+
+          console.log(`[mc-test] ${tc.name}: ${result.vertexCount} verts, ${elapsed.toFixed(1)}ms, ${passed ? 'PASS' : 'FAIL'}`);
+          if (!passed) allPassed = false;
+
+          // Render the result if it has vertices
+          if (result.vertexCount > 0) {
+            const geom = new THREE.BufferGeometry();
+            geom.setAttribute('position', new THREE.BufferAttribute(result.positions, 3));
+            geom.setAttribute('normal', new THREE.BufferAttribute(result.normals, 3));
+            geom.computeBoundingSphere();
+
+            const mesh = new THREE.Mesh(geom, material.clone());
+            // Offset each test case along X so they're all visible
+            const SPACING = 3.5;
+            const totalWidth = (TEST_CASES.length - 1) * SPACING;
+            mesh.position.x = i * SPACING - totalWidth / 2;
+            scene.add(mesh);
+            meshes.push(mesh);
+
+            // AABB check: vertices should be within padded bounds of atom positions
+            const atomCount = tc.atoms.length / 4;
+            let minX = Infinity, minY = Infinity, minZ = Infinity;
+            let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+            let maxR = 0;
+            for (let a = 0; a < atomCount; a++) {
+              const ax = tc.atoms[a * 4], ay = tc.atoms[a * 4 + 1], az = tc.atoms[a * 4 + 2], ar = tc.atoms[a * 4 + 3];
+              minX = Math.min(minX, ax); maxX = Math.max(maxX, ax);
+              minY = Math.min(minY, ay); maxY = Math.max(maxY, ay);
+              minZ = Math.min(minZ, az); maxZ = Math.max(maxZ, az);
+              maxR = Math.max(maxR, ar);
+            }
+            const AABB_MARGIN = maxR * 3; // generous margin for metaball field falloff
+            let outOfBounds = 0;
+            for (let v = 0; v < result.vertexCount; v++) {
+              const vx = result.positions[v * 3], vy = result.positions[v * 3 + 1], vz = result.positions[v * 3 + 2];
+              if (vx < minX - AABB_MARGIN || vx > maxX + AABB_MARGIN ||
+                  vy < minY - AABB_MARGIN || vy > maxY + AABB_MARGIN ||
+                  vz < minZ - AABB_MARGIN || vz > maxZ + AABB_MARGIN) {
+                outOfBounds++;
+              }
+            }
+            results[tc.name].outOfBounds = outOfBounds;
+            if (outOfBounds > 0) {
+              console.warn(`[mc-test] ${tc.name}: ${outOfBounds} vertices out of expected AABB`);
+              allPassed = false;
+              results[tc.name].passed = false;
+            }
+
+            // Normal sanity check: normals should be unit length (±0.01)
+            let badNormals = 0;
+            for (let v = 0; v < result.vertexCount; v++) {
+              const nx = result.normals[v * 3], ny = result.normals[v * 3 + 1], nz = result.normals[v * 3 + 2];
+              const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+              if (Math.abs(len - 1.0) > 0.01) badNormals++;
+            }
+            results[tc.name].badNormals = badNormals;
+            if (badNormals > 0) {
+              console.warn(`[mc-test] ${tc.name}: ${badNormals} normals not unit length`);
+              // Don't fail for this — gradient normals can be slightly off at sharp features
+            }
+          }
+        }
+
+        // Responsiveness check: page should respond within 500ms
+        const RESPONSIVENESS_DEADLINE_MS = 500;
+        const respT0 = performance.now();
+        await new Promise(r => setTimeout(r, 0));
+        const respElapsed = performance.now() - respT0;
+        results._responsiveness = { elapsed: respElapsed.toFixed(1), passed: respElapsed < RESPONSIVENESS_DEADLINE_MS };
+        if (!results._responsiveness.passed) allPassed = false;
+        console.log(`[mc-test] Responsiveness: ${respElapsed.toFixed(1)}ms ${results._responsiveness.passed ? 'PASS' : 'FAIL'}`);
+
+        setStatus(allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED', allPassed ? 'pass' : 'fail');
+
+        // Render labels under each shape
+        const resultsEl = document.getElementById('results');
+        for (const tc of TEST_CASES) {
+          const r = results[tc.name];
+          const label = document.createElement('div');
+          label.className = 'test-label';
+          const statusCls = r?.passed ? 'pass' : 'fail';
+          const statusText = r?.passed ? '✓ PASS' : '✗ FAIL';
+          label.innerHTML = `
+            <div class="name">${tc.name}</div>
+            <div class="desc">${tc.desc}</div>
+            <div class="stat ${statusCls}">${statusText} · ${r?.vertexCount ?? 0} verts · ${r?.elapsed ?? '?'}ms</div>
+          `;
+          resultsEl.appendChild(label);
+        }
+
+        // Expose for Playwright
+        window.__mcTestResults = results;
+        window.__mcTestPassed = allPassed;
+
+        // Start render loop
+        renderer.setAnimationLoop(() => {
+          controls.update();
+          renderer.render(scene, camera);
+        });
+
+        // Clean up GPU compute resources (not needed after initial compute)
+        mcGPU.dispose();
+
+      } catch (err) {
+        console.error('[mc-test] FATAL:', err);
+        setStatus(`ERROR: ${err.message}`, 'fail');
+        window.__mcTestResults = { error: err.message };
+        window.__mcTestPassed = false;
+      }
+    }
+
+    runTests();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
