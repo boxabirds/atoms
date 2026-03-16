@@ -1,0 +1,17 @@
+node_modules/
+dist/
+dsp-engine/target/
+dsp-engine/pkg/
+public/wasm/
+*.wasm
+bun.lockb
+
+# Auth data (contains session cookies)
+data/auth/
+
+# Downloaded samples (large binary files, re-downloadable)
+data/samples/
+data/sms/
+
+# Chrome profile from patchright
+freesound-profile/
