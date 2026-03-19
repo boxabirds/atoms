@@ -866,6 +866,91 @@ impl CaSynth {
     }
 }
 
+// ─── Demo 7: Commuted Matrix (proper waveguide synthesis) ───────────────────
+
+const MATRIX_MAX_WAVETABLE: usize = 16384;
+const MATRIX_WAVEGUIDE_DELAY: usize = 2048;
+const MATRIX_MIN_PITCH_HZ: f32 = 50.0;
+const MATRIX_PITCH_RANGE_HZ: f32 = 500.0;
+const MATRIX_MIN_FEEDBACK: f32 = 0.9;
+const MATRIX_FEEDBACK_RANGE: f32 = 0.099;
+
+struct CommutedMatrixSynth {
+    sample_rate: f32,
+    wavetable: Vec<f32>,
+    wavetable_len: usize,
+    wavetable_pos: usize,
+    wavetable_playing: bool,
+    delay_buf: Vec<f32>,
+    delay_write: usize,
+    delay_length: usize,
+    loop_filter_state: f32,
+}
+
+impl CommutedMatrixSynth {
+    fn new(sample_rate: f32) -> Self {
+        Self {
+            sample_rate,
+            wavetable: vec![0.0; MATRIX_MAX_WAVETABLE],
+            wavetable_len: 0,
+            wavetable_pos: 0,
+            wavetable_playing: false,
+            delay_buf: vec![0.0; MATRIX_WAVEGUIDE_DELAY],
+            delay_write: 0,
+            delay_length: 200,
+            loop_filter_state: 0.0,
+        }
+    }
+
+    fn trigger(&mut self) {
+        self.wavetable_pos = 0;
+        self.wavetable_playing = self.wavetable_len > 0;
+        for s in self.delay_buf.iter_mut() {
+            *s = 0.0;
+        }
+        self.loop_filter_state = 0.0;
+    }
+
+    fn render(&mut self, output: &mut [f32], params: &[f32]) {
+        let gain = params[P_GAIN].clamp(0.0, 1.0);
+        let pitch_hz = MATRIX_MIN_PITCH_HZ + params[P_PARAM_A] * MATRIX_PITCH_RANGE_HZ;
+        let brightness = params[P_PARAM_B];
+        let feedback = MATRIX_MIN_FEEDBACK + params[P_PARAM_C] * MATRIX_FEEDBACK_RANGE;
+
+        self.delay_length = ((self.sample_rate / pitch_hz) as usize)
+            .clamp(2, MATRIX_WAVEGUIDE_DELAY - 1);
+        let filter_coeff = 1.0 - brightness * 0.95;
+
+        for frame in 0..BLOCK_FRAMES {
+            let excitation = if self.wavetable_playing && self.wavetable_pos < self.wavetable_len {
+                let val = self.wavetable[self.wavetable_pos];
+                self.wavetable_pos += 1;
+                if self.wavetable_pos >= self.wavetable_len {
+                    self.wavetable_playing = false;
+                }
+                val
+            } else {
+                0.0
+            };
+
+            let read_pos = (self.delay_write + MATRIX_WAVEGUIDE_DELAY - self.delay_length)
+                % MATRIX_WAVEGUIDE_DELAY;
+            let delayed = self.delay_buf[read_pos];
+
+            self.loop_filter_state = delayed * (1.0 - filter_coeff)
+                + self.loop_filter_state * filter_coeff;
+
+            self.delay_buf[self.delay_write] =
+                excitation + self.loop_filter_state * feedback + DENORMAL_BIAS;
+            self.delay_write = (self.delay_write + 1) % MATRIX_WAVEGUIDE_DELAY;
+
+            let sample = delayed * gain;
+            output[frame * CHANNELS] = sample;
+            output[frame * CHANNELS + 1] = sample;
+        }
+    }
+}
+
 // ─── Master Engine ──────────────────────────────────────────────────────────
 
 struct Engine {
@@ -878,6 +963,7 @@ struct Engine {
     gendyn: GendynSynth,
     bubble: BubbleSynth,
     ca: CaSynth,
+    matrix: CommutedMatrixSynth,
     output: Vec<f32>,
     #[allow(dead_code)]
     temp: Vec<f32>,
@@ -895,6 +981,7 @@ impl Engine {
             gendyn: GendynSynth::new(sample_rate),
             bubble: BubbleSynth::new(sample_rate),
             ca: CaSynth::new(sample_rate),
+            matrix: CommutedMatrixSynth::new(sample_rate),
             output: vec![0.0; BLOCK_SAMPLES],
             temp: vec![0.0; BLOCK_SAMPLES],
             param_buf: vec![0.0; SAB_TOTAL_FLOATS],
@@ -929,6 +1016,7 @@ impl Engine {
             4 => self.gendyn.render(&mut self.output, params),
             5 => self.bubble.render(&mut self.output, params),
             6 => self.ca.render(&mut self.output, params),
+            7 => self.matrix.render(&mut self.output, params),
             _ => {}
         }
 
@@ -1016,4 +1104,24 @@ pub fn get_peak(demo_index: u32) -> f32 {
         let idx = demo_index as usize * PARAMS_PER_DEMO + P_PEAK_OUT;
         if idx < e.param_buf.len() { e.param_buf[idx] } else { 0.0 }
     })
+}
+
+// ─── Commuted matrix wavetable management ───────────────────────────────────
+
+#[wasm_bindgen]
+pub fn get_matrix_wavetable_ptr() -> u32 {
+    with_engine(|e| e.matrix.wavetable.as_ptr() as u32)
+}
+
+#[wasm_bindgen]
+pub fn set_matrix_wavetable_len(len: u32) {
+    with_engine(|e| {
+        e.matrix.wavetable_len = (len as usize).min(MATRIX_MAX_WAVETABLE);
+        e.matrix.trigger();
+    });
+}
+
+#[wasm_bindgen]
+pub fn trigger_matrix() {
+    with_engine(|e| e.matrix.trigger());
 }

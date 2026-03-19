@@ -155,6 +155,18 @@ export class AudioController {
     }
   }
 
+  /** Upload a pre-convolved wavetable to the WASM matrix synth (auto-triggers). */
+  uploadMatrixWavetable(data: Float32Array): void {
+    if (!this.node) return;
+    this.node.port.postMessage({ type: "upload-wavetable", data });
+  }
+
+  /** Re-trigger the matrix waveguide with the already-uploaded wavetable. */
+  retriggerMatrix(): void {
+    if (!this.node) return;
+    this.node.port.postMessage({ type: "retrigger-matrix" });
+  }
+
   destroy(): void {
     this.node?.disconnect();
     this.master?.disconnect();

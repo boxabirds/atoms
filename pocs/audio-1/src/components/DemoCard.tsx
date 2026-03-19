@@ -84,6 +84,10 @@ export function DemoCard({ demo, controller }: DemoCardProps) {
       </div>
 
       <p className="demo-description">{demo.description}</p>
+      <details className="demo-why">
+        <summary>Why this is interesting</summary>
+        <p>{demo.whyInteresting}</p>
+      </details>
 
       {/* Level meter */}
       <div className="demo-meter">

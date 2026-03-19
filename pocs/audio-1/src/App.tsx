@@ -78,7 +78,7 @@ export function App() {
         ))}
       </div>
 
-      <ConvolutionMatrix />
+      <ConvolutionMatrix controller={controllerRef.current} />
     </div>
   );
 }

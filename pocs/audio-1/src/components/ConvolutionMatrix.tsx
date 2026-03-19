@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { AudioController, P_ACTIVE, P_GAIN, P_PARAM_A, P_PARAM_B, P_PARAM_C } from "../audio/controller";
 
 // ─── Matrix configuration ──────────────────────────────────────────────────
 
@@ -26,8 +27,17 @@ const BODIES: SampleDef[] = [
   { label: "Tubular Bell", shortLabel: "Bell", file: "/samples/bodies/tubular-bell-strike-01.wav", description: "Large tubular bell decay" },
 ];
 
-const CELL_FADE_DURATION_MS = 600;
 const TOTAL_COMBINATIONS = EXCITATIONS.length * BODIES.length;
+const MATRIX_DEMO_INDEX = 7;
+const COMMUTED_EXCITATION_SAMPLES = 16384;
+const COMMUTED_FADE_SAMPLES = 512;
+const PLAYBACK_INDICATOR_MS = 3000;
+const DEFAULT_PITCH = 0.3;
+const DEFAULT_BRIGHTNESS = 0.6;
+const DEFAULT_DECAY = 0.5;
+const DEFAULT_MATRIX_GAIN = 0.6;
+const NORMALIZE_PEAK = 0.5;
+const NORMALIZE_FLOOR = 0.001;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -44,19 +54,18 @@ function cellKey(row: number, col: number): string {
   return `${row}-${col}`;
 }
 
-const FADE_OUT_SAMPLES = 128;
-
-/** Render the full convolution offline so the IR tail rings out completely. */
-async function renderConvolution(
+/**
+ * Pre-convolve excitation × body IR offline, truncate to a compact
+ * wavetable for waveguide excitation (commuted synthesis).
+ */
+async function preConvolve(
   excitation: AudioBuffer,
   bodyIR: AudioBuffer
-): Promise<AudioBuffer> {
-  const channels = Math.max(excitation.numberOfChannels, bodyIR.numberOfChannels);
-  // Convolution output length = excitation + IR - 1
-  const length = excitation.length + bodyIR.length - 1;
+): Promise<Float32Array> {
+  const fullLength = excitation.length + bodyIR.length - 1;
   const sr = excitation.sampleRate;
 
-  const offline = new OfflineAudioContext(channels, length, sr);
+  const offline = new OfflineAudioContext(1, fullLength, sr);
   const source = offline.createBufferSource();
   source.buffer = excitation;
   const convolver = new ConvolverNode(offline, { buffer: bodyIR });
@@ -66,68 +75,66 @@ async function renderConvolution(
 
   const rendered = await offline.startRendering();
 
-  // Apply a short fade-out to the end to avoid any click at the tail
-  const fadeLen = Math.min(FADE_OUT_SAMPLES, rendered.length);
-  for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
-    const data = rendered.getChannelData(ch);
-    for (let i = 0; i < fadeLen; i++) {
-      data[rendered.length - fadeLen + i] *= 1 - i / fadeLen;
+  // Truncate — the waveguide handles sustain
+  const fullData = rendered.getChannelData(0);
+  const len = Math.min(fullData.length, COMMUTED_EXCITATION_SAMPLES);
+  const data = new Float32Array(len);
+  data.set(fullData.subarray(0, len));
+
+  // Cosine fade-out at truncation boundary
+  const fadeLen = Math.min(COMMUTED_FADE_SAMPLES, len);
+  for (let i = 0; i < fadeLen; i++) {
+    const t = i / fadeLen;
+    data[len - fadeLen + i] *= 0.5 * (1 + Math.cos(Math.PI * t));
+  }
+
+  // Normalize
+  let peak = 0;
+  for (let i = 0; i < len; i++) {
+    const abs = Math.abs(data[i]);
+    if (abs > peak) peak = abs;
+  }
+  if (peak > NORMALIZE_FLOOR) {
+    const scale = NORMALIZE_PEAK / peak;
+    for (let i = 0; i < len; i++) {
+      data[i] *= scale;
     }
   }
 
-  return rendered;
+  return data;
 }
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
-export function ConvolutionMatrix() {
-  const ctxRef = useRef<AudioContext | null>(null);
-  const masterRef = useRef<GainNode | null>(null);
+interface ConvolutionMatrixProps {
+  controller: AudioController | null;
+}
+
+export function ConvolutionMatrix({ controller }: ConvolutionMatrixProps) {
+  const decodeCtxRef = useRef<AudioContext | null>(null);
   const excitationBuffers = useRef<Map<string, AudioBuffer>>(new Map());
   const bodyBuffers = useRef<Map<string, AudioBuffer>>(new Map());
-  const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const convolutionCache = useRef<Map<string, Float32Array>>(new Map());
+  const lastUploadedKey = useRef<string | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [playingCell, setPlayingCell] = useState<string | null>(null);
   const [hoveredCell, setHoveredCell] = useState<string | null>(null);
+  const [pitch, setPitch] = useState(DEFAULT_PITCH);
+  const [brightness, setBrightness] = useState(DEFAULT_BRIGHTNESS);
+  const [decay, setDecay] = useState(DEFAULT_DECAY);
 
-  // Lazy-init AudioContext
-  const ensureContext = useCallback(async (): Promise<AudioContext> => {
-    if (ctxRef.current && ctxRef.current.state !== "closed") {
-      if (ctxRef.current.state === "suspended") {
-        await ctxRef.current.resume();
-      }
-      return ctxRef.current;
-    }
-
-    const ctx = new AudioContext({ latencyHint: "interactive" });
-    ctxRef.current = ctx;
-
-    const master = new GainNode(ctx, { gain: 0.8 });
-    const compressor = new DynamicsCompressorNode(ctx, {
-      threshold: -18,
-      knee: 10,
-      ratio: 4,
-      attack: 0.003,
-      release: 0.18,
-    });
-    master.connect(compressor);
-    compressor.connect(ctx.destination);
-    masterRef.current = master;
-
-    return ctx;
-  }, []);
-
-  // Load all samples on mount
+  // Load samples for offline pre-convolution
   useEffect(() => {
     let cancelled = false;
 
     async function loadSamples() {
       try {
-        const ctx = await ensureContext();
+        const ctx = new AudioContext();
+        decodeCtxRef.current = ctx;
 
-        const excitationLoads = EXCITATIONS.map(async (ex) => {
+        const excLoads = EXCITATIONS.map(async (ex) => {
           const buf = await fetchAudioBuffer(ctx, ex.file);
           excitationBuffers.current.set(ex.file, buf);
         });
@@ -137,11 +144,8 @@ export function ConvolutionMatrix() {
           bodyBuffers.current.set(body.file, buf);
         });
 
-        await Promise.all([...excitationLoads, ...bodyLoads]);
-
-        if (!cancelled) {
-          setLoading(false);
-        }
+        await Promise.all([...excLoads, ...bodyLoads]);
+        if (!cancelled) setLoading(false);
       } catch (err) {
         if (!cancelled) {
           setLoadError(String(err));
@@ -151,135 +155,207 @@ export function ConvolutionMatrix() {
     }
 
     loadSamples();
-    return () => {
-      cancelled = true;
-    };
-  }, [ensureContext]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      activeSourceRef.current?.stop();
-      ctxRef.current?.close();
-    };
+    return () => { cancelled = true; };
   }, []);
+
+  // Cleanup decode context
+  useEffect(() => {
+    return () => { decodeCtxRef.current?.close(); };
+  }, []);
+
+  // Sync waveguide params to SAB
+  useEffect(() => {
+    if (!controller) return;
+    controller.setParam(MATRIX_DEMO_INDEX, P_PARAM_A, pitch);
+    controller.setParam(MATRIX_DEMO_INDEX, P_PARAM_B, brightness);
+    controller.setParam(MATRIX_DEMO_INDEX, P_PARAM_C, decay);
+  }, [controller, pitch, brightness, decay]);
 
   const playConvolution = useCallback(
     async (rowIdx: number, colIdx: number) => {
-      const ctx = await ensureContext();
-      const master = masterRef.current;
-      if (!ctx || !master) return;
-
-      // Stop any currently playing sound
-      if (activeSourceRef.current) {
-        try {
-          activeSourceRef.current.stop();
-        } catch {
-          // Already stopped
-        }
-        activeSourceRef.current = null;
+      if (!controller) return;
+      try {
+        await controller.resume();
+      } catch {
+        return;
       }
 
       const key = cellKey(rowIdx, colIdx);
-      const excitation = excitationBuffers.current.get(EXCITATIONS[rowIdx].file);
-      const bodyIR = bodyBuffers.current.get(BODIES[colIdx].file);
+      const cacheKey = `${EXCITATIONS[rowIdx].file}|${BODIES[colIdx].file}`;
 
-      if (!excitation || !bodyIR) return;
+      // Get or compute pre-convolved wavetable
+      let wavetable = convolutionCache.current.get(cacheKey);
+      if (!wavetable) {
+        const exc = excitationBuffers.current.get(EXCITATIONS[rowIdx].file);
+        const body = bodyBuffers.current.get(BODIES[colIdx].file);
+        if (!exc || !body) return;
+        wavetable = await preConvolve(exc, body);
+        convolutionCache.current.set(cacheKey, wavetable);
+      }
 
-      // Render full convolution offline (includes the complete IR tail)
-      const convolved = await renderConvolution(excitation, bodyIR);
+      // Activate demo 7
+      controller.setParam(MATRIX_DEMO_INDEX, P_ACTIVE, 1.0);
+      controller.setParam(MATRIX_DEMO_INDEX, P_GAIN, DEFAULT_MATRIX_GAIN);
 
-      const source = ctx.createBufferSource();
-      source.buffer = convolved;
-      source.connect(master);
+      // Upload or re-trigger
+      if (lastUploadedKey.current === cacheKey) {
+        controller.retriggerMatrix();
+      } else {
+        controller.uploadMatrixWavetable(wavetable);
+        lastUploadedKey.current = cacheKey;
+      }
 
-      source.onended = () => {
-        setPlayingCell((current) => (current === key ? null : current));
-        source.disconnect();
-        if (activeSourceRef.current === source) {
-          activeSourceRef.current = null;
-        }
-      };
-
-      activeSourceRef.current = source;
       setPlayingCell(key);
-      source.start();
+      setTimeout(() => {
+        setPlayingCell((current) => (current === key ? null : current));
+      }, PLAYBACK_INDICATOR_MS);
     },
-    [ensureContext]
+    [controller]
   );
 
-  // Derive hovered row/col for highlighting
+  // Derive hovered/playing row/col for highlighting
   const hoveredRow = hoveredCell ? parseInt(hoveredCell.split("-")[0]) : null;
   const hoveredCol = hoveredCell ? parseInt(hoveredCell.split("-")[1]) : null;
   const playingRow = playingCell ? parseInt(playingCell.split("-")[0]) : null;
   const playingCol = playingCell ? parseInt(playingCell.split("-")[1]) : null;
 
-  // Active row/col for label highlighting (playing takes precedence over hover)
   const activeRow = playingRow ?? hoveredRow;
   const activeCol = playingCol ?? hoveredCol;
 
   return (
     <section className="cm-section">
-      {/* ─── Header ─── */}
+      {/* Header */}
       <div className="cm-header">
         <h2 className="cm-title">What hits what?</h2>
         <p className="cm-lead">
-          Pick an <strong>energy source</strong> (left) and a <strong>resonant body</strong> (top).
-          The browser convolves them in real time &mdash; {TOTAL_COMBINATIONS} unique instruments from {EXCITATIONS.length + BODIES.length} recordings.
+          Pick an <strong>energy source</strong> (left) and a{" "}
+          <strong>resonant body</strong> (top). The excitation is pre-convolved
+          with the body impulse response, then fed through a{" "}
+          <strong>delay-line waveguide</strong> in WASM &mdash; true commuted
+          synthesis at 5&ndash;10 ops/sample. {TOTAL_COMBINATIONS} unique
+          instruments from {EXCITATIONS.length + BODIES.length} recordings.
         </p>
       </div>
 
-      {/* ─── How it works ─── */}
+      {/* How it works */}
       <div className="cm-explainer">
         <div className="cm-explainer-step">
           <div className="cm-explainer-num">1</div>
           <div>
-            <strong>Excitation</strong>
-            <span className="cm-explainer-detail">A short transient — a strike, click, pop, or hiss. This is the energy entering the system.</span>
+            <strong>Pre-convolve</strong>
+            <span className="cm-explainer-detail">
+              Excitation &times; body impulse response, computed once offline.
+              Captures the resonant character in a compact wavetable.
+            </span>
           </div>
         </div>
-        <div className="cm-explainer-arrow">&times;</div>
+        <div className="cm-explainer-arrow">&rarr;</div>
         <div className="cm-explainer-step">
           <div className="cm-explainer-num">2</div>
           <div>
-            <strong>Body impulse response</strong>
-            <span className="cm-explainer-detail">The resonant character of a physical object — its modes, decay, and timbre captured as a recording.</span>
+            <strong>Waveguide</strong>
+            <span className="cm-explainer-detail">
+              Delay line + one-pole loop filter running in Rust/WASM.
+              Pitch, brightness, and decay at ~10 ops/sample.
+            </span>
           </div>
         </div>
         <div className="cm-explainer-arrow">=</div>
         <div className="cm-explainer-step">
           <div className="cm-explainer-num">3</div>
           <div>
-            <strong>New instrument</strong>
-            <span className="cm-explainer-detail">Convolution merges them: the excitation's energy excites the body's resonances. 5-10 ops/sample.</span>
+            <strong>Living instrument</strong>
+            <span className="cm-explainer-detail">
+              The body&rsquo;s resonance is applied once; the waveguide sustains
+              it with real-time controllable pitch, brightness, and decay.
+            </span>
           </div>
         </div>
       </div>
 
       {loadError && (
-        <div className="cm-error">
-          Failed to load samples: {loadError}
-        </div>
+        <div className="cm-error">Failed to load samples: {loadError}</div>
       )}
 
       {loading && !loadError && (
-        <div className="cm-loading">Loading {EXCITATIONS.length + BODIES.length} samples...</div>
+        <div className="cm-loading">
+          Loading {EXCITATIONS.length + BODIES.length} samples...
+        </div>
       )}
 
-      {/* ─── Current selection readout ─── */}
+      {/* Waveguide controls */}
+      <div className="cm-waveguide-params">
+        <div className="cm-waveguide-param">
+          <label className="cm-waveguide-label">
+            <span>Pitch</span>
+            <span className="cm-waveguide-value">
+              {Math.round(50 + pitch * 500)} Hz
+            </span>
+          </label>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={pitch}
+            onChange={(e) => setPitch(Number(e.target.value))}
+            className="cm-waveguide-slider"
+          />
+        </div>
+        <div className="cm-waveguide-param">
+          <label className="cm-waveguide-label">
+            <span>Brightness</span>
+            <span className="cm-waveguide-value">
+              {Math.round(brightness * 100)}%
+            </span>
+          </label>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={brightness}
+            onChange={(e) => setBrightness(Number(e.target.value))}
+            className="cm-waveguide-slider"
+          />
+        </div>
+        <div className="cm-waveguide-param">
+          <label className="cm-waveguide-label">
+            <span>Decay</span>
+            <span className="cm-waveguide-value">
+              {Math.round(decay * 100)}%
+            </span>
+          </label>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={decay}
+            onChange={(e) => setDecay(Number(e.target.value))}
+            className="cm-waveguide-slider"
+          />
+        </div>
+      </div>
+
+      {/* Selection readout */}
       <div className="cm-readout">
         {activeRow !== null && activeCol !== null ? (
           <>
-            <span className="cm-readout-excitation">{EXCITATIONS[activeRow].label}</span>
+            <span className="cm-readout-excitation">
+              {EXCITATIONS[activeRow].label}
+            </span>
             <span className="cm-readout-through">through</span>
             <span className="cm-readout-body">{BODIES[activeCol].label}</span>
           </>
         ) : (
-          <span className="cm-readout-hint">Hover or click a cell to hear a combination</span>
+          <span className="cm-readout-hint">
+            Hover or click a cell to hear a combination
+          </span>
         )}
       </div>
 
-      {/* ─── Grid ─── */}
+      {/* Grid */}
       <div className="cm-grid-wrapper">
         <div
           className="cm-grid"
@@ -287,13 +363,11 @@ export function ConvolutionMatrix() {
             gridTemplateColumns: `140px repeat(${BODIES.length}, 1fr)`,
           }}
         >
-          {/* Corner: axis labels */}
           <div className="cm-corner">
             <span className="cm-corner-body">Body &rarr;</span>
             <span className="cm-corner-excitation">&darr; Excitation</span>
           </div>
 
-          {/* Column headers */}
           {BODIES.map((body, ci) => (
             <div
               key={ci}
@@ -304,7 +378,6 @@ export function ConvolutionMatrix() {
             </div>
           ))}
 
-          {/* Rows */}
           {EXCITATIONS.map((ex, ri) => (
             <Fragment key={ri}>
               <div
@@ -326,11 +399,6 @@ export function ConvolutionMatrix() {
                     onMouseLeave={() => setHoveredCell(null)}
                     disabled={loading}
                     aria-label={`${ex.label} through ${BODIES[ci].label}`}
-                    style={
-                      {
-                        "--fade-duration": `${CELL_FADE_DURATION_MS}ms`,
-                      } as React.CSSProperties
-                    }
                   >
                     {isPlaying ? (
                       <span className="cm-cell-playing-icon" />
@@ -346,11 +414,12 @@ export function ConvolutionMatrix() {
       </div>
 
       <p className="cm-footnote">
-        Uses the Web Audio <code>ConvolverNode</code> — the same convolution that
-        runs reverb in DAWs. Each combination is generated live, not pre-rendered.
-        This is the core of Julius Smith&apos;s <em>commuted synthesis</em>: the
-        most expensive part of a physical model (the resonant body) collapses into
-        a single pre-recorded impulse response.
+        True <em>commuted synthesis</em> (Julius Smith): the expensive body
+        response is applied once via offline convolution, producing a compact
+        wavetable. A cheap delay-line waveguide (5&ndash;10 ops/sample) then
+        provides pitched sustain with controllable brightness and decay. The
+        entire runtime DSP runs in Rust/WASM inside an AudioWorklet &mdash; no
+        Web Audio <code>ConvolverNode</code> in the real-time playback path.
       </p>
     </section>
   );

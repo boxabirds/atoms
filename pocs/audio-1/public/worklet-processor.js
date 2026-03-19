@@ -15,6 +15,9 @@ import init, {
   get_output_len,
   get_rms,
   get_peak,
+  get_matrix_wavetable_ptr,
+  set_matrix_wavetable_len,
+  trigger_matrix,
 } from "./wasm/synth_gallery_dsp.js";
 
 const CHANNELS = 2;
@@ -40,6 +43,24 @@ class SynthGalleryProcessor extends AudioWorkletProcessor {
 
     // SharedArrayBuffer view for parameter passing
     this.sabFloat32 = sab ? new Float32Array(sab) : null;
+
+    this.port.onmessage = (event) => {
+      if (!this.engineReady) return;
+      const msg = event.data;
+      if (msg.type === "upload-wavetable") {
+        const data = msg.data;
+        const ptr = get_matrix_wavetable_ptr();
+        const view = new Float32Array(
+          this.wasmExports.memory.buffer,
+          ptr,
+          data.length
+        );
+        view.set(data);
+        set_matrix_wavetable_len(data.length);
+      } else if (msg.type === "retrigger-matrix") {
+        trigger_matrix();
+      }
+    };
 
     this.initEngine(wasmModule);
   }
